@@ -1,0 +1,31 @@
+.{
+    // DLL to read exports from.
+    .input = "Library.dll",
+
+    // Real DLL to forward exports to. Null derives from input.
+    // (Library.dll > Library.og.dll)
+    .forward_to = null,
+
+    // Generated proxy DLL name. Null uses input basename.
+    .output = null,
+
+    // .runtime_stub or .pe_forwarder
+    .backend = .runtime_stub,
+
+    // Extra DLLs to load.
+    .load = .{
+        "Patch.dll",
+    },
+
+    // Used only by .pe_forwarder.
+    .load_import = "#1",
+
+    // Optional output copy directory.
+    .copy_to = null,
+
+    .forwarding = .{
+        .include_ordinals = true,
+        .include_data_exports = true,
+        .fail_on_unsupported = true,
+    },
+}
