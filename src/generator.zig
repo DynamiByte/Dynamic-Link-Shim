@@ -45,7 +45,7 @@ const IMAGE_SCN_MEM_READ: u32 = 0x40000000;
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-    const args = try parseArgs(init.minimal.args.toSlice(init.arena.allocator()) catch |err|
+    const args = try parseArgs(gpa, init.minimal.args.toSlice(init.arena.allocator()) catch |err|
         std.process.fatal("unable to read arguments: {t}", .{err}));
 
     switch (args.mode) {
@@ -57,7 +57,7 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn parseArgs(argv: []const []const u8) !Args {
+fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8) !Args {
     var args = Args{};
 
     var i: usize = 1;
@@ -73,13 +73,21 @@ fn parseArgs(argv: []const []const u8) !Args {
         } else if (std.mem.eql(u8, arg, "--output")) {
             args.overrides.output = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--load")) {
-            args.overrides.load = takeValue(argv, &i, arg);
+            try appendLoad(gpa, &args, takeValue(argv, &i, arg));
         } else if (std.mem.eql(u8, arg, "--import") or std.mem.eql(u8, arg, "--load-import")) {
             args.overrides.load_import = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--backend") or std.mem.eql(u8, arg, "--method")) {
             args.overrides.backend = parseBackend(takeValue(argv, &i, arg));
         } else if (std.mem.eql(u8, arg, "--copy-to")) {
             args.overrides.copy_to = takeValue(argv, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--output-pair")) {
+            args.overrides.output_pair = true;
+        } else if (std.mem.eql(u8, arg, "--no-output-pair")) {
+            args.overrides.output_pair = false;
+        } else if (std.mem.eql(u8, arg, "--embed") or std.mem.eql(u8, arg, "--embed-dlls") or std.mem.eql(u8, arg, "--embed_dlls")) {
+            args.overrides.embed_dlls = true;
+        } else if (std.mem.eql(u8, arg, "--no-embed") or std.mem.eql(u8, arg, "--no-embed-dlls") or std.mem.eql(u8, arg, "--no-embed_dlls")) {
+            args.overrides.embed_dlls = false;
         } else if (std.mem.eql(u8, arg, "--resolved-forward-to")) {
             args.resolved_forward_to = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--export-source")) {
@@ -110,6 +118,14 @@ fn parseArgs(argv: []const []const u8) !Args {
     }
 
     return args;
+}
+
+fn appendLoad(gpa: std.mem.Allocator, args: *Args, value: []const u8) !void {
+    const old = args.overrides.load orelse &.{};
+    const next = try gpa.alloc([]const u8, old.len + 1);
+    @memcpy(next[0..old.len], old);
+    next[old.len] = value;
+    args.overrides.load = next;
 }
 
 fn takeValue(argv: []const []const u8, index: *usize, name: []const u8) []const u8 {
@@ -173,6 +189,8 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     try out.writer.print("forward_to: {s}\n", .{forward_to});
     try out.writer.print("exports_from: {s}\n", .{export_source});
     try out.writer.print("output: {s}\n", .{config.outputName(cfg)});
+    try out.writer.print("output_pair: {}\n", .{cfg.output_pair});
+    try out.writer.print("embed_dlls: {}\n", .{cfg.embed_dlls});
     try out.writer.print("exports: {d}\n\n", .{table.exports.len});
 
     for (table.exports) |export_item| {
@@ -497,6 +515,8 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward_to: []const u8, cfg: confi
     try writeZigString(&out.writer, forward_to);
     try out.writer.print(";\n\n", .{});
 
+    try writeEmbeddedRuntimeConfig(&out.writer, cfg, forward_to);
+
     try out.writer.print("pub const export_count: usize = {d};\n\n", .{supportedExportCount(cfg, table)});
 
     try out.writer.print("pub const export_names = [_]?[:0]const u8{{\n", .{});
@@ -521,8 +541,9 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward_to: []const u8, cfg: confi
     try out.writer.print("}};\n\n", .{});
 
     for (cfg.load, 0..) |load, idx| {
+        const runtime_load = runtimeLoadName(cfg, load);
         try out.writer.print("const load_{d}_w = [_:0]u16{{", .{idx});
-        try writeUtf16Values(&out.writer, load, "load entry");
+        try writeUtf16Values(&out.writer, runtime_load, "load entry");
         try out.writer.print("}};\n", .{});
     }
 
@@ -534,13 +555,61 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward_to: []const u8, cfg: confi
 
     try out.writer.print("pub const load_text = [_][:0]const u8{{\n", .{});
     for (cfg.load) |load| {
+        const runtime_load = runtimeLoadName(cfg, load);
         try out.writer.print("    ", .{});
-        try writeZigString(&out.writer, load);
+        try writeZigString(&out.writer, runtime_load);
         try out.writer.print(",\n", .{});
     }
     try out.writer.print("}};\n", .{});
 
     return out.toOwnedSlice();
+}
+
+fn writeEmbeddedRuntimeConfig(w: *std.Io.Writer, cfg: config.Config, forward_to: []const u8) !void {
+    if (cfg.embed_dlls) {
+        try w.print("const embedded_0_w = [_:0]u16{{", .{});
+        try writeUtf16Values(w, forward_to, "embedded forward target");
+        try w.print("}};\n", .{});
+
+        for (cfg.load, 0..) |load, idx| {
+            const runtime_load = runtimeLoadName(cfg, load);
+            try w.print("const embedded_{d}_w = [_:0]u16{{", .{idx + 1});
+            try writeUtf16Values(w, runtime_load, "embedded load entry");
+            try w.print("}};\n", .{});
+        }
+
+        try w.print("\n", .{});
+    }
+
+    try w.writeAll(
+        \\pub const EmbeddedDll = struct {
+        \\    path_text: [:0]const u8,
+        \\    path: [*:0]const u16,
+        \\    bytes: []const u8,
+        \\};
+        \\
+        \\pub const embedded = [_]EmbeddedDll{
+        \\
+    );
+
+    if (cfg.embed_dlls) {
+        try writeEmbeddedDllEntry(w, 0, forward_to);
+        for (cfg.load, 0..) |load, idx| {
+            try writeEmbeddedDllEntry(w, idx + 1, runtimeLoadName(cfg, load));
+        }
+    }
+
+    try w.print("}};\n\n", .{});
+}
+
+fn writeEmbeddedDllEntry(w: *std.Io.Writer, index: usize, path: []const u8) !void {
+    try w.print("    .{{ .path_text = ", .{});
+    try writeZigString(w, path);
+    try w.print(", .path = &embedded_{d}_w, .bytes = @embedFile(\"dls_embed_{d}\") }},\n", .{ index, index });
+}
+
+fn runtimeLoadName(cfg: config.Config, load: []const u8) []const u8 {
+    return if (cfg.embed_dlls) config.embeddedRuntimeName(load) else load;
 }
 
 fn buildStubAsm(gpa: std.mem.Allocator, cfg: config.Config, table: pe.ExportTable) ![]u8 {

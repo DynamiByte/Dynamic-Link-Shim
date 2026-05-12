@@ -19,6 +19,8 @@ pub const Config = struct {
     load: []const []const u8 = &.{},
     load_import: ?[]const u8 = "#1",
     copy_to: ?[]const u8 = null,
+    output_pair: bool = false,
+    embed_dlls: bool = false,
     backend: Backend = .runtime_stub,
     forwarding: Forwarding = .{},
 };
@@ -27,9 +29,11 @@ pub const Overrides = struct {
     input: ?[]const u8 = null,
     forward_to: ?[]const u8 = null,
     output: ?[]const u8 = null,
-    load: ?[]const u8 = null,
+    load: ?[]const []const u8 = null,
     load_import: ?[]const u8 = null,
     copy_to: ?[]const u8 = null,
+    output_pair: ?bool = null,
+    embed_dlls: ?bool = null,
     backend: ?Backend = null,
 };
 
@@ -68,17 +72,12 @@ fn applyOverrides(gpa: std.mem.Allocator, cfg: *Config, overrides: Overrides) !v
     if (overrides.output) |value| cfg.output = value;
     if (overrides.load_import) |value| cfg.load_import = value;
     if (overrides.copy_to) |value| cfg.copy_to = value;
+    if (overrides.output_pair) |value| cfg.output_pair = value;
+    if (overrides.embed_dlls) |value| cfg.embed_dlls = value;
     if (overrides.backend) |value| cfg.backend = value;
 
-    if (overrides.load) |value| {
-        if (value.len == 0) {
-            cfg.load = &.{};
-        } else {
-            const items = try gpa.alloc([]const u8, 1);
-            items[0] = value;
-            cfg.load = items;
-        }
-    }
+    _ = gpa;
+    if (overrides.load) |value| cfg.load = value;
 }
 
 fn validate(cfg: Config) !void {
@@ -114,6 +113,10 @@ pub fn forwardToName(gpa: std.mem.Allocator, cfg: Config) ![]const u8 {
     if (cfg.forward_to) |forward_to| return gpa.dupe(u8, forward_to);
     if (!endsWithIgnoreCase(cfg.input, ".dll")) return error.InputMustBeDllForDefaultForwardTo;
     return std.fmt.allocPrint(gpa, "{s}.og.dll", .{cfg.input[0 .. cfg.input.len - 4]});
+}
+
+pub fn embeddedRuntimeName(path: []const u8) []const u8 {
+    return std.fs.path.basenameWindows(path);
 }
 
 fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {

@@ -54,6 +54,14 @@ zig build -- --input C:\Game\Library.dll --load Patch.dll --output-pair
 
 This writes the proxy as `Library.dll` and the backing DLL as `Library.og.dll` in the build output. Add `--copy-to DIR` to put the pair somewhere else.
 
+To fold the backing DLL and loaded DLLs into the generated proxy:
+
+```bash
+zig build -- --input C:\Game\Library.dll --load Patch.dll --embed-dlls
+```
+
+This embeds `Library.og.dll` and each configured `--load` DLL as raw bytes inside `Library.dll`. At runtime, the proxy extracts them into the current folder only when they are missing, then loads them normally. Pass `--load` more than once to embed multiple patch DLLs.
+
 ---
 
 ## Configuration
@@ -69,6 +77,8 @@ Main fields:
 - `load`: DLLs loaded by the proxy
 - `load_import`: import used by `pe_forwarder` to load DLLs
 - `copy_to`: optional output copy directory
+- `output_pair`: also output/copy the backing DLL beside the proxy
+- `embed_dlls`: embed the backing DLL and loaded DLLs into the runtime stub
 - `forwarding`: export handling options
 
 Use another config file:
@@ -84,10 +94,17 @@ zig build -Dbackend=runtime_stub
 zig build -Dbackend=pe_forwarder
 ```
 
+Enable pair or embedded output from build options:
+
+```bash
+zig build -Doutput_pair=true
+zig build -Dembed_dlls=true
+```
+
 Command arguments go after `--` and override config values:
 
 ```bash
-zig build -- --input Library.dll --forward-to Library.og.dll --load Patch.dll
+zig build -- --input Library.dll --forward-to Library.og.dll --load PatchA.dll --load PatchB.dll
 ```
 
 Useful command arguments:
@@ -96,10 +113,11 @@ Useful command arguments:
 - `--forward-to [PATH]`
 - `--output [NAME]`
 - `--backend runtime_stub|pe_forwarder`
-- `--load [PATH]`
+- `--load [PATH]`; can be repeated
 - `--import [NAME_OR_ORDINAL]`
 - `--copy-to-input-dir`
-- `--output-pair`
+- `--output-pair` / `--no-output-pair`
+- `--embed-dlls` / `--no-embed-dlls`
 
 ---
 
@@ -111,6 +129,8 @@ Useful command arguments:
 
 It builds a normal DLL with real exported stubs. At runtime, the proxy loads configured DLLs with `LoadLibraryW`, loads the backing DLL with `LoadLibraryW`, resolves exports with `GetProcAddress`, then jumps to the resolved export.
 
+When `embed_dlls` is enabled, this backend also embeds the backing DLL and configured loaded DLLs as raw bytes, extracts them into the current folder if they are missing, then continues through the same loading path.
+
 This is the safer default when the host expects real exported functions from the proxy DLL.
 
 ### `pe_forwarder`
@@ -119,7 +139,7 @@ This is the safer default when the host expects real exported functions from the
 
 This mirrors the reference forwarder style: companion DLLs are loaded through the PE import table, while exports are represented as PE export forwarders to `forward_to`.
 
-For `pe_forwarder`, each loaded DLL must export the configured `load_import` name or ordinal. `#1` is the default.
+For `pe_forwarder`, each loaded DLL must export the configured `load_import` name or ordinal. `#1` is the default. Embedded DLL extraction is only supported by `runtime_stub`.
 
 ---
 

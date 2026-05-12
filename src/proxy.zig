@@ -4,8 +4,13 @@ const cfg = @import("runtime_config");
 const win32 = @import("win32.zig");
 
 const LOAD_THREAD_STARTED: u32 = 1;
+const EXTRACT_IDLE: u32 = 0;
+const EXTRACT_RUNNING: u32 = 1;
+const EXTRACT_DONE: u32 = 2;
+const EXTRACT_FAILED: u32 = 3;
 
 var g_load_thread_started: u32 = 0;
+var g_extract_state: u32 = EXTRACT_IDLE;
 var g_forward_module: usize = 0;
 var g_targets: [cfg.export_count]usize = [_]usize{0} ** cfg.export_count;
 var g_last_error: win32.DWORD = 0;
@@ -24,6 +29,8 @@ pub export fn DllMain(hinstance: win32.HINSTANCE, reason: win32.DWORD, _: ?win32
 }
 
 fn loadThread(_: ?*anyopaque) callconv(.winapi) win32.DWORD {
+    if (!ensureEmbeddedDlls()) return 0;
+
     _ = forwardModule();
 
     for (cfg.load, 0..) |load, idx| {
@@ -48,6 +55,8 @@ pub export fn dls_resolve_export(index: u32) callconv(.winapi) usize {
 }
 
 fn forwardModule() ?win32.HMODULE {
+    if (!ensureEmbeddedDlls()) return null;
+
     const cached = @atomicLoad(usize, &g_forward_module, .acquire);
     if (cached != 0) return @ptrFromInt(cached);
 
@@ -71,6 +80,86 @@ fn resolveProc(module: win32.HMODULE, export_index: usize) ?*anyopaque {
 
     @atomicStore(win32.DWORD, &g_last_error, win32.GetLastError(), .release);
     return null;
+}
+
+fn ensureEmbeddedDlls() bool {
+    while (true) {
+        switch (@atomicLoad(u32, &g_extract_state, .acquire)) {
+            EXTRACT_DONE => return true,
+            EXTRACT_FAILED => return false,
+            EXTRACT_IDLE => {
+                if (@cmpxchgStrong(u32, &g_extract_state, EXTRACT_IDLE, EXTRACT_RUNNING, .acq_rel, .acquire) == null) {
+                    const ok = extractEmbeddedDlls();
+                    @atomicStore(u32, &g_extract_state, if (ok) EXTRACT_DONE else EXTRACT_FAILED, .release);
+                    return ok;
+                }
+            },
+            EXTRACT_RUNNING => win32.Sleep(1),
+            else => return false,
+        }
+    }
+}
+
+fn extractEmbeddedDlls() bool {
+    for (cfg.embedded) |embedded| {
+        if (!extractEmbeddedDll(embedded)) return false;
+    }
+
+    return true;
+}
+
+fn extractEmbeddedDll(embedded: cfg.EmbeddedDll) bool {
+    if (win32.GetFileAttributesW(embedded.path) != win32.INVALID_FILE_ATTRIBUTES) return true;
+
+    const handle = win32.CreateFileW(
+        embedded.path,
+        win32.GENERIC_WRITE,
+        0,
+        null,
+        win32.CREATE_NEW,
+        win32.FILE_ATTRIBUTE_NORMAL,
+        null,
+    );
+
+    if (handle == win32.INVALID_HANDLE_VALUE) {
+        const code = win32.GetLastError();
+        if (code == win32.ERROR_FILE_EXISTS or code == win32.ERROR_ALREADY_EXISTS) return true;
+        @atomicStore(win32.DWORD, &g_last_error, code, .release);
+        showExtractError(embedded.path_text, code);
+        return false;
+    }
+
+    var remaining = embedded.bytes;
+    while (remaining.len != 0) {
+        const chunk_len = @min(remaining.len, @as(usize, std.math.maxInt(u32)));
+        const chunk_size: win32.DWORD = @intCast(chunk_len);
+        var written: win32.DWORD = 0;
+
+        if (win32.WriteFile(handle, remaining.ptr, chunk_size, &written, null) == win32.FALSE or written != chunk_size) {
+            const code = win32.GetLastError();
+            _ = win32.CloseHandle(handle);
+            _ = win32.DeleteFileW(embedded.path);
+            @atomicStore(win32.DWORD, &g_last_error, code, .release);
+            showExtractError(embedded.path_text, code);
+            return false;
+        }
+
+        remaining = remaining[chunk_len..];
+    }
+
+    _ = win32.CloseHandle(handle);
+    return true;
+}
+
+fn showExtractError(path: [:0]const u8, code: win32.DWORD) void {
+    var message_buf: [512]u8 = undefined;
+    const message = std.fmt.bufPrintZ(
+        &message_buf,
+        "DLS could not extract embedded DLL:\r\n{s}\r\n\r\nWin32 error: {d}",
+        .{ path, code },
+    ) catch "DLS could not extract an embedded DLL";
+
+    _ = win32.MessageBoxA(null, message.ptr, "DLS extract failed", win32.MB_OK | win32.MB_ICONERROR);
 }
 
 fn loadDll(label: []const u8, path_text: [:0]const u8, path: [*:0]const u16) bool {

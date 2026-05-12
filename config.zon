@@ -23,6 +23,12 @@
     // Optional output copy directory.
     .copy_to = null,
 
+    // Also place the backing DLL beside the generated proxy.
+    .output_pair = false,
+
+    // Embed the backing DLL and load DLLs into the generated runtime stub.
+    .embed_dlls = false,
+
     .forwarding = .{
         .include_ordinals = true,
         .include_data_exports = true,

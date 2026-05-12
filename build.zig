@@ -18,7 +18,6 @@ const CliOptions = struct {
     config_path: ?[]const u8 = null,
     overrides: config.Overrides = .{},
     copy_to_input_dir: bool = false,
-    output_pair: bool = false,
 };
 
 const default_windows_arch: std.Target.Cpu.Arch = .x86_64;
@@ -92,9 +91,11 @@ fn addGeneratorArgs(
         run.addArg(value);
     }
 
-    if (overrides.load) |value| {
-        run.addArg("--load");
-        run.addArg(value);
+    if (overrides.load) |values| {
+        for (values) |value| {
+            run.addArg("--load");
+            run.addArg(value);
+        }
     }
 
     if (overrides.load_import) |value| {
@@ -105,6 +106,14 @@ fn addGeneratorArgs(
     if (overrides.copy_to) |value| {
         run.addArg("--copy-to");
         run.addArg(value);
+    }
+
+    if (overrides.output_pair) |value| {
+        run.addArg(if (value) "--output-pair" else "--no-output-pair");
+    }
+
+    if (overrides.embed_dlls) |value| {
+        run.addArg(if (value) "--embed-dlls" else "--no-embed-dlls");
     }
 
     if (overrides.backend) |value| {
@@ -136,7 +145,7 @@ fn parseBackend(value: []const u8) config.Backend {
         std.process.fatal("unknown backend: {s}", .{value});
 }
 
-fn parseForwardedArgs(args: ?[]const []const u8) CliOptions {
+fn parseForwardedArgs(allocator: std.mem.Allocator, args: ?[]const []const u8) CliOptions {
     const values = args orelse return .{};
     var parsed = CliOptions{};
 
@@ -153,7 +162,7 @@ fn parseForwardedArgs(args: ?[]const []const u8) CliOptions {
         } else if (std.mem.eql(u8, arg, "--output")) {
             parsed.overrides.output = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--load")) {
-            parsed.overrides.load = readValue(values, &i, arg);
+            appendLoad(allocator, &parsed, readValue(values, &i, arg));
         } else if (std.mem.eql(u8, arg, "--import") or std.mem.eql(u8, arg, "--load-import") or std.mem.eql(u8, arg, "--load_import")) {
             parsed.overrides.load_import = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--backend") or std.mem.eql(u8, arg, "--method")) {
@@ -163,7 +172,13 @@ fn parseForwardedArgs(args: ?[]const []const u8) CliOptions {
         } else if (std.mem.eql(u8, arg, "--copy-to-input-dir")) {
             parsed.copy_to_input_dir = true;
         } else if (std.mem.eql(u8, arg, "--output-pair")) {
-            parsed.output_pair = true;
+            parsed.overrides.output_pair = true;
+        } else if (std.mem.eql(u8, arg, "--no-output-pair")) {
+            parsed.overrides.output_pair = false;
+        } else if (std.mem.eql(u8, arg, "--embed") or std.mem.eql(u8, arg, "--embed-dlls") or std.mem.eql(u8, arg, "--embed_dlls")) {
+            parsed.overrides.embed_dlls = true;
+        } else if (std.mem.eql(u8, arg, "--no-embed") or std.mem.eql(u8, arg, "--no-embed-dlls") or std.mem.eql(u8, arg, "--no-embed_dlls")) {
+            parsed.overrides.embed_dlls = false;
         } else {
             std.process.fatal("unknown DLS argument: {s}", .{arg});
         }
@@ -176,7 +191,33 @@ fn chooseOverride(d_option: ?[]const u8, cli_option: ?[]const u8) ?[]const u8 {
     return cli_option orelse d_option;
 }
 
+fn appendLoad(allocator: std.mem.Allocator, parsed: *CliOptions, value: []const u8) void {
+    const old = parsed.overrides.load orelse &.{};
+    const next = allocator.alloc([]const u8, old.len + 1) catch |err|
+        std.process.fatal("unable to store --load value: {t}", .{err});
+    @memcpy(next[0..old.len], old);
+    next[old.len] = value;
+    parsed.overrides.load = next;
+}
+
+fn singleLoadOverride(allocator: std.mem.Allocator, value: []const u8) []const []const u8 {
+    const items = allocator.alloc([]const u8, 1) catch |err|
+        std.process.fatal("unable to store -Dload value: {t}", .{err});
+    items[0] = value;
+    return items;
+}
+
+fn chooseLoadOverride(allocator: std.mem.Allocator, d_option: ?[]const u8, cli_option: ?[]const []const u8) ?[]const []const u8 {
+    if (cli_option) |values| return values;
+    if (d_option) |value| return singleLoadOverride(allocator, value);
+    return null;
+}
+
 fn chooseBackend(d_option: ?config.Backend, cli_option: ?config.Backend) ?config.Backend {
+    return cli_option orelse d_option;
+}
+
+fn chooseBool(d_option: ?bool, cli_option: ?bool) ?bool {
     return cli_option orelse d_option;
 }
 
@@ -186,6 +227,35 @@ fn pathExists(io: std.Io, path: []const u8) bool {
         else => std.process.fatal("unable to access {s}: {t}", .{ path, err }),
     };
     return true;
+}
+
+fn addEmbeddedDllImports(
+    b: *std.Build,
+    module: *std.Build.Module,
+    app_config: config.Config,
+    export_source_name: []const u8,
+) void {
+    if (!app_config.embed_dlls) return;
+
+    addEmbeddedDllImport(b, module, 0, export_source_name);
+    for (app_config.load, 0..) |load, idx| {
+        addEmbeddedDllImport(b, module, idx + 1, load);
+    }
+}
+
+fn addEmbeddedDllImport(
+    b: *std.Build,
+    module: *std.Build.Module,
+    index: usize,
+    source_path: []const u8,
+) void {
+    if (!pathExists(b.graph.io, source_path)) {
+        std.process.fatal("embedded DLL source does not exist: {s}", .{source_path});
+    }
+
+    module.addAnonymousImport(b.fmt("dls_embed_{d}", .{index}), .{
+        .root_source_file = .{ .cwd_relative = source_path },
+    });
 }
 
 pub fn build(b: *std.Build) void {
@@ -199,7 +269,7 @@ pub fn build(b: *std.Build) void {
         std.process.fatal("DLS builds Windows DLLs; select a Windows target", .{});
     }
 
-    const cli_options = parseForwardedArgs(b.args);
+    const cli_options = parseForwardedArgs(b.allocator, b.args);
     const config_path = cli_options.config_path orelse
         (b.option([]const u8, "config", "Config file") orelse "config.zon");
     const copy_to_option = chooseOverride(
@@ -209,20 +279,28 @@ pub fn build(b: *std.Build) void {
     if (cli_options.copy_to_input_dir and copy_to_option != null) {
         std.process.fatal("use --copy-to or --copy-to-input-dir, not both", .{});
     }
-    if (cli_options.copy_to_input_dir and cli_options.output_pair) {
-        std.process.fatal("use --output-pair or --copy-to-input-dir, not both", .{});
-    }
 
     var overrides = config.Overrides{
         .input = chooseOverride(b.option([]const u8, "input", "Override config input DLL"), cli_options.overrides.input),
         .forward_to = chooseOverride(b.option([]const u8, "forward_to", "Override config forward target"), cli_options.overrides.forward_to),
         .output = chooseOverride(b.option([]const u8, "output", "Override config output DLL name"), cli_options.overrides.output),
-        .load = chooseOverride(b.option([]const u8, "load", "Override config load list with one DLL"), cli_options.overrides.load),
+        .load = chooseLoadOverride(b.allocator, b.option([]const u8, "load", "Override config load list with one DLL"), cli_options.overrides.load),
         .load_import = chooseOverride(b.option([]const u8, "import", "Override config load import"), cli_options.overrides.load_import),
         .copy_to = copy_to_option,
+        .output_pair = chooseBool(b.option(bool, "output_pair", "Copy the generated proxy and backing DLL as a pair"), cli_options.overrides.output_pair),
+        .embed_dlls = chooseBool(b.option(bool, "embed_dlls", "Embed backing and load DLLs into the runtime stub"), cli_options.overrides.embed_dlls),
         .backend = chooseBackend(b.option(config.Backend, "backend", "Proxy generation backend"), cli_options.overrides.backend),
     };
     var app_config = loadBuildConfig(b, config_path, overrides);
+    if (cli_options.copy_to_input_dir and app_config.output_pair) {
+        std.process.fatal("use --output-pair or --copy-to-input-dir, not both", .{});
+    }
+    if (cli_options.copy_to_input_dir and app_config.embed_dlls) {
+        std.process.fatal("use --embed-dlls or --copy-to-input-dir, not both", .{});
+    }
+    if (app_config.embed_dlls and app_config.backend == .pe_forwarder) {
+        std.process.fatal("embedded DLL extraction needs the runtime_stub backend", .{});
+    }
     if (cli_options.copy_to_input_dir) {
         app_config.copy_to = config.inputDirectory(app_config);
         overrides.copy_to = app_config.copy_to;
@@ -241,7 +319,7 @@ pub fn build(b: *std.Build) void {
     else
         std.process.fatal("unable to find export source DLL: {s} or {s}", .{ app_config.input, forward_to_name });
     const backing_output_name = std.fs.path.basenameWindows(forward_to_name);
-    const runtime_forward_to_name = if (cli_options.output_pair) backing_output_name else forward_to_name;
+    const runtime_forward_to_name = if (app_config.output_pair or app_config.embed_dlls) backing_output_name else forward_to_name;
 
     const generator = b.addExecutable(.{
         .name = "dls-generate",
@@ -274,7 +352,7 @@ pub fn build(b: *std.Build) void {
 
         const install_dll = b.addInstallFileWithDir(dll_output, .bin, output_name);
         b.getInstallStep().dependOn(&install_dll.step);
-        if (cli_options.output_pair) {
+        if (app_config.output_pair) {
             const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = export_source_name }, .bin, backing_output_name);
             b.getInstallStep().dependOn(&install_backing.step);
         }
@@ -287,7 +365,7 @@ pub fn build(b: *std.Build) void {
             copy.addArg(copy_to);
             b.getInstallStep().dependOn(&copy.step);
 
-            if (cli_options.output_pair) {
+            if (app_config.output_pair) {
                 const copy_backing = b.addRunArtifact(generator);
                 copy_backing.addArg("--copy");
                 copy_backing.addArg(export_source_name);
@@ -320,6 +398,7 @@ pub fn build(b: *std.Build) void {
             .target = dll_target,
             .optimize = optimize,
         });
+        addEmbeddedDllImports(b, runtime_module, app_config, export_source_name);
 
         const dll = b.addLibrary(.{
             .linkage = .dynamic,
@@ -339,7 +418,7 @@ pub fn build(b: *std.Build) void {
 
         const install_dll = b.addInstallFileWithDir(dll.getEmittedBin(), .bin, output_name);
         b.getInstallStep().dependOn(&install_dll.step);
-        if (cli_options.output_pair) {
+        if (app_config.output_pair) {
             const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = export_source_name }, .bin, backing_output_name);
             b.getInstallStep().dependOn(&install_backing.step);
         }
@@ -352,7 +431,7 @@ pub fn build(b: *std.Build) void {
             copy.addArg(copy_to);
             b.getInstallStep().dependOn(&copy.step);
 
-            if (cli_options.output_pair) {
+            if (app_config.output_pair) {
                 const copy_backing = b.addRunArtifact(generator);
                 copy_backing.addArg("--copy");
                 copy_backing.addArg(export_source_name);
