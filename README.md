@@ -6,7 +6,7 @@ DLS takes an existing Windows DLL, generates a replacement DLL with the same exp
 
 In plain terms: pick a DLL that something already loads, tell DLS what companion DLLs to load, and DLS builds a drop-in proxy for that DLL.
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-green)
 
 ---
