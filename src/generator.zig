@@ -24,6 +24,7 @@ const Args = struct {
     copy_dir: ?[]const u8 = null,
     clean_dir: []const u8 = "generated",
     resolved_forward_to: ?[]const u8 = null,
+    export_source: ?[]const u8 = null,
 };
 
 const IDATA_RVA: u32 = 0x1000;
@@ -81,6 +82,8 @@ fn parseArgs(argv: []const []const u8) !Args {
             args.overrides.copy_to = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--resolved-forward-to")) {
             args.resolved_forward_to = takeValue(argv, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--export-source")) {
+            args.export_source = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--emit-dll")) {
             args.emit_dll = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--emit-def")) {
@@ -124,7 +127,7 @@ fn generate(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     const cfg = try loadConfig(gpa, io, args);
     const forward_to = try resolveForwardTo(gpa, cfg, args);
     defer gpa.free(forward_to);
-    const export_source = try resolveExportSource(gpa, io, cfg.input, forward_to);
+    const export_source = try resolveExportSource(gpa, io, cfg.input, forward_to, args.export_source);
     defer gpa.free(export_source);
     const table = try loadExports(gpa, io, export_source);
     defer table.deinit(gpa);
@@ -156,7 +159,7 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     const cfg = try loadConfig(gpa, io, args);
     const forward_to = try resolveForwardTo(gpa, cfg, args);
     defer gpa.free(forward_to);
-    const export_source = try resolveExportSource(gpa, io, cfg.input, forward_to);
+    const export_source = try resolveExportSource(gpa, io, cfg.input, forward_to, args.export_source);
     defer gpa.free(export_source);
     const table = try loadExports(gpa, io, export_source);
     defer table.deinit(gpa);
@@ -204,9 +207,16 @@ fn resolveForwardTo(gpa: std.mem.Allocator, cfg: config.Config, args: Args) ![]c
     return config.forwardToName(gpa, cfg);
 }
 
-fn resolveExportSource(gpa: std.mem.Allocator, io: std.Io, input: []const u8, forward_to: []const u8) ![]const u8 {
-    if (exists(io, input)) return gpa.dupe(u8, input);
+fn resolveExportSource(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    input: []const u8,
+    forward_to: []const u8,
+    override: ?[]const u8,
+) ![]const u8 {
+    if (override) |source| return gpa.dupe(u8, source);
     if (exists(io, forward_to)) return gpa.dupe(u8, forward_to);
+    if (exists(io, input)) return gpa.dupe(u8, input);
     std.process.fatal("unable to find export source DLL: {s} or {s}", .{ input, forward_to });
 }
 

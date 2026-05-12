@@ -48,6 +48,14 @@ Library.og.dll     <- original backing DLL
 Patch.dll          <- DLL loaded by the proxy
 ```
 
+To output a pair without changing the input folder:
+
+```bash
+zig build -- --input C:\Game\Library.dll --load Patch.dll --output-pair
+```
+
+This writes the proxy as `Library.dll` and the backing DLL as `Library.og.dll` in the build output. Add `--copy-to DIR` to put the pair somewhere else.
+
 ---
 
 ## Configuration
@@ -93,6 +101,7 @@ Useful command arguments:
 - `--load [PATH]`
 - `--import [NAME_OR_ORDINAL]`
 - `--copy-to-input-dir`
+- `--output-pair`
 
 ---
 

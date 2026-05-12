@@ -18,6 +18,7 @@ const CliOptions = struct {
     config_path: ?[]const u8 = null,
     overrides: config.Overrides = .{},
     copy_to_input_dir: bool = false,
+    output_pair: bool = false,
 };
 
 const default_windows_arch: std.Target.Cpu.Arch = .x86_64;
@@ -161,6 +162,8 @@ fn parseForwardedArgs(args: ?[]const []const u8) CliOptions {
             parsed.overrides.copy_to = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--copy-to-input-dir")) {
             parsed.copy_to_input_dir = true;
+        } else if (std.mem.eql(u8, arg, "--output-pair")) {
+            parsed.output_pair = true;
         } else {
             std.process.fatal("unknown DLS argument: {s}", .{arg});
         }
@@ -175,6 +178,14 @@ fn chooseOverride(d_option: ?[]const u8, cli_option: ?[]const u8) ?[]const u8 {
 
 fn chooseBackend(d_option: ?config.Backend, cli_option: ?config.Backend) ?config.Backend {
     return cli_option orelse d_option;
+}
+
+fn pathExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => std.process.fatal("unable to access {s}: {t}", .{ path, err }),
+    };
+    return true;
 }
 
 pub fn build(b: *std.Build) void {
@@ -198,6 +209,9 @@ pub fn build(b: *std.Build) void {
     if (cli_options.copy_to_input_dir and copy_to_option != null) {
         std.process.fatal("use --copy-to or --copy-to-input-dir, not both", .{});
     }
+    if (cli_options.copy_to_input_dir and cli_options.output_pair) {
+        std.process.fatal("use --output-pair or --copy-to-input-dir, not both", .{});
+    }
 
     var overrides = config.Overrides{
         .input = chooseOverride(b.option([]const u8, "input", "Override config input DLL"), cli_options.overrides.input),
@@ -218,6 +232,16 @@ pub fn build(b: *std.Build) void {
     const forward_to_name = config.forwardToName(b.allocator, app_config) catch |err| {
         std.process.fatal("unable to resolve forward_to: {t}", .{err});
     };
+    const export_source_name = if (cli_options.copy_to_input_dir)
+        forward_to_name
+    else if (pathExists(b.graph.io, forward_to_name))
+        forward_to_name
+    else if (pathExists(b.graph.io, app_config.input))
+        app_config.input
+    else
+        std.process.fatal("unable to find export source DLL: {s} or {s}", .{ app_config.input, forward_to_name });
+    const backing_output_name = std.fs.path.basenameWindows(forward_to_name);
+    const runtime_forward_to_name = if (cli_options.output_pair) backing_output_name else forward_to_name;
 
     const generator = b.addExecutable(.{
         .name = "dls-generate",
@@ -242,12 +266,18 @@ pub fn build(b: *std.Build) void {
         if (prepare_input_dir) |prepare| generate.step.dependOn(&prepare.step);
         addGeneratorArgs(generate, config_path, overrides);
         generate.addArg("--resolved-forward-to");
-        generate.addArg(forward_to_name);
+        generate.addArg(runtime_forward_to_name);
+        generate.addArg("--export-source");
+        generate.addArg(export_source_name);
         generate.addArg("--emit-dll");
         const dll_output = generate.addOutputFileArg(output_name);
 
         const install_dll = b.addInstallFileWithDir(dll_output, .bin, output_name);
         b.getInstallStep().dependOn(&install_dll.step);
+        if (cli_options.output_pair) {
+            const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = export_source_name }, .bin, backing_output_name);
+            b.getInstallStep().dependOn(&install_backing.step);
+        }
 
         if (app_config.copy_to) |copy_to| {
             const copy = b.addRunArtifact(generator);
@@ -256,6 +286,15 @@ pub fn build(b: *std.Build) void {
             copy.addArg(output_name);
             copy.addArg(copy_to);
             b.getInstallStep().dependOn(&copy.step);
+
+            if (cli_options.output_pair) {
+                const copy_backing = b.addRunArtifact(generator);
+                copy_backing.addArg("--copy");
+                copy_backing.addArg(export_source_name);
+                copy_backing.addArg(backing_output_name);
+                copy_backing.addArg(copy_to);
+                b.getInstallStep().dependOn(&copy_backing.step);
+            }
         }
     } else {
         if (dll_target.result.cpu.arch != .x86_64) {
@@ -266,7 +305,9 @@ pub fn build(b: *std.Build) void {
         if (prepare_input_dir) |prepare| generate.step.dependOn(&prepare.step);
         addGeneratorArgs(generate, config_path, overrides);
         generate.addArg("--resolved-forward-to");
-        generate.addArg(forward_to_name);
+        generate.addArg(runtime_forward_to_name);
+        generate.addArg("--export-source");
+        generate.addArg(export_source_name);
         generate.addArg("--emit-def");
         const def_file = generate.addOutputFileArg("proxy.def");
         generate.addArg("--emit-runtime");
@@ -298,6 +339,10 @@ pub fn build(b: *std.Build) void {
 
         const install_dll = b.addInstallFileWithDir(dll.getEmittedBin(), .bin, output_name);
         b.getInstallStep().dependOn(&install_dll.step);
+        if (cli_options.output_pair) {
+            const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = export_source_name }, .bin, backing_output_name);
+            b.getInstallStep().dependOn(&install_backing.step);
+        }
 
         if (app_config.copy_to) |copy_to| {
             const copy = b.addRunArtifact(generator);
@@ -306,6 +351,15 @@ pub fn build(b: *std.Build) void {
             copy.addArg(output_name);
             copy.addArg(copy_to);
             b.getInstallStep().dependOn(&copy.step);
+
+            if (cli_options.output_pair) {
+                const copy_backing = b.addRunArtifact(generator);
+                copy_backing.addArg("--copy");
+                copy_backing.addArg(export_source_name);
+                copy_backing.addArg(backing_output_name);
+                copy_backing.addArg(copy_to);
+                b.getInstallStep().dependOn(&copy_backing.step);
+            }
         }
     }
 
@@ -313,7 +367,9 @@ pub fn build(b: *std.Build) void {
     const inspect_run = b.addRunArtifact(generator);
     addGeneratorArgs(inspect_run, config_path, overrides);
     inspect_run.addArg("--resolved-forward-to");
-    inspect_run.addArg(forward_to_name);
+    inspect_run.addArg(runtime_forward_to_name);
+    inspect_run.addArg("--export-source");
+    inspect_run.addArg(export_source_name);
     inspect_run.addArg("--inspect");
     inspect.dependOn(&inspect_run.step);
 
