@@ -13,9 +13,7 @@ In plain terms: pick a DLL that something already loads, tell DLS what companion
 
 ## Disclaimer
 
-DLS is intended for legitimate mod loaders, compatibility patches, wrapper DLLs, and local development workflows. Use it only with software you own, control, or have permission to modify.
-
-Some software may treat DLL replacement or wrapper DLLs as unsupported. Use it at your own risk.
+Using with with some software may violate their ToS. Use it at your own risk.
 
 ---
 
