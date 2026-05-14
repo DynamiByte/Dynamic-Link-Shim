@@ -27,7 +27,7 @@ Using with with some software may violate their ToS. Use it at your own risk.
 Example:
 
 ```bash
-zig build -Dinput=Library.dll -Dload=Patch.dll
+zig build -- --input "Library.dll" --load "Patch.dll"
 ```
 
 DLS reads exports from `Library.dll`, generates a proxy named `Library.dll`, forwards the original exports to the backing DLL, and loads `Patch.dll` when the proxy starts.
@@ -35,7 +35,7 @@ DLS reads exports from `Library.dll`, generates a proxy named `Library.dll`, for
 If the patch must be injected at process startup, before the game's main thread begins running, use bootstrap mode:
 
 ```bash
-zig build -Dinput=Library.dll -Dload=Patch.dll -Dbootstrap=true
+zig build -- --input "Library.dll" --load "Patch.dll" --bootstrap
 ```
 
 In bootstrap mode, the proxy checks whether the configured load DLLs are already present. If they are missing, it starts a fresh suspended copy of the same process, injects the load DLLs with remote `LoadLibraryW`, resumes the new process, and exits the original process. Runtime DLL paths are resolved beside the proxy DLL.
@@ -43,7 +43,7 @@ In bootstrap mode, the proxy checks whether the configured load DLLs are already
 For an install-style folder, DLS can rename the original DLL to the resolved `forward_to` path and copy the proxy beside it:
 
 ```bash
-zig build -Dinput=C:\Game\Library.dll -Dload=Patch.dll -Dcopy_to_input_dir=true
+zig build -- --input "/Game/Library.dll" --load "Patch.dll" --copy-to-input-dir
 ```
 
 Example layout after install:
@@ -57,18 +57,18 @@ Patch.dll          <- DLL loaded by the proxy
 To output a pair without changing the input folder:
 
 ```bash
-zig build -Dinput=C:\Game\Library.dll -Dload=Patch.dll -Doutput_pair=true
+zig build -- --input "/Game/Library.dll" --load "Patch.dll" --output-pair
 ```
 
-This writes the proxy as `Library.dll` and the backing DLL as `Library.og.dll` in the build output. Add `-Dcopy_to=DIR` to put the pair somewhere else.
+This writes the proxy as `Library.dll` and the backing DLL as `Library.og.dll` in the build output. Add `--copy-to DIR` to put the pair somewhere else.
 
 To fold the backing DLL and loaded DLLs into the generated proxy:
 
 ```bash
-zig build -Dinput=C:\Game\Library.dll -Dload=Patch.dll -Dembed_dlls=true
+zig build -- --input "/Game/Library.dll" --load "Patch.dll" --embed-dlls
 ```
 
-This embeds `Library.og.dll` and each configured load DLL as raw bytes inside `Library.dll`. At runtime, the proxy extracts them into the current folder only when they are missing, then loads them normally. Use `config.zon` for multiple patch DLLs.
+This embeds `Library.og.dll` and each configured `--load` DLL as raw bytes inside `Library.dll`. At runtime, the proxy extracts them into the current folder only when they are missing, then loads them normally. Pass `--load` more than once to embed multiple patch DLLs.
 
 ---
 
@@ -93,7 +93,7 @@ Main fields:
 Use another config file:
 
 ```bash
-zig build -Dconfig=some-file.zon
+zig build -- --config "some-file.zon"
 ```
 
 Override the backend:
@@ -103,35 +103,33 @@ zig build -Dbackend=runtime_stub
 zig build -Dbackend=pe_forwarder
 ```
 
-Enable pair, embedded output, or bootstrap from build options:
+Enable pair output, embedded output, startup bootstrap, or input-folder copying with command arguments:
 
 ```bash
-zig build -Doutput_pair=true
-zig build -Dembed_dlls=true
-zig build -Dbootstrap=true
+zig build -- --output-pair
+zig build -- --embed-dlls
+zig build -- --bootstrap
+zig build -- --copy-to-input-dir
 ```
 
-Build options override config values:
+Command arguments go after `--` and override config values:
 
 ```bash
-zig build -Dinput=Library.dll -Dforward_to=Library.og.dll -Dload=Patch.dll
+zig build -- --input "Library.dll" --forward-to "Library.og.dll" --load "PatchA.dll" --load "PatchB.dll"
 ```
 
-Useful build options:
+Useful command arguments:
 
-- `-Dinput=[PATH]`
-- `-Dforward_to=[PATH]`
-- `-Doutput=[NAME]`
-- `-Dbackend=runtime_stub|pe_forwarder`
-- `-Dload=[PATH]`
-- `-Dimport=[NAME_OR_ORDINAL]`
-- `-Dcopy_to=[DIR]`
-- `-Dcopy_to_input_dir=true`
-- `-Doutput_pair=true|false`
-- `-Dembed_dlls=true|false`
-- `-Dbootstrap=true|false`
-
-Use `config.zon` when you need multiple `load` entries.
+- `--input [PATH]`
+- `--forward-to [PATH]`
+- `--output [NAME]`
+- `--load [PATH]`; can be repeated
+- `--import [NAME_OR_ORDINAL]`
+- `--copy-to [DIR]`
+- `--copy-to-input-dir`
+- `--output-pair` / `--no-output-pair`
+- `--embed-dlls` / `--no-embed-dlls`
+- `--bootstrap` / `--no-bootstrap`
 
 ---
 
