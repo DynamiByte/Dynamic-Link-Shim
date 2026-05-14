@@ -21,6 +21,7 @@ pub const Config = struct {
     copy_to: ?[]const u8 = null,
     output_pair: bool = false,
     embed_dlls: bool = false,
+    bootstrap: bool = false,
     backend: Backend = .runtime_stub,
     forwarding: Forwarding = .{},
 };
@@ -34,6 +35,7 @@ pub const Overrides = struct {
     copy_to: ?[]const u8 = null,
     output_pair: ?bool = null,
     embed_dlls: ?bool = null,
+    bootstrap: ?bool = null,
     backend: ?Backend = null,
 };
 
@@ -74,6 +76,7 @@ fn applyOverrides(gpa: std.mem.Allocator, cfg: *Config, overrides: Overrides) !v
     if (overrides.copy_to) |value| cfg.copy_to = value;
     if (overrides.output_pair) |value| cfg.output_pair = value;
     if (overrides.embed_dlls) |value| cfg.embed_dlls = value;
+    if (overrides.bootstrap) |value| cfg.bootstrap = value;
     if (overrides.backend) |value| cfg.backend = value;
 
     _ = gpa;
@@ -95,6 +98,9 @@ fn validate(cfg: Config) !void {
     if (cfg.load_import) |load_import| {
         if (load_import.len == 0) return error.EmptyLoadImport;
     }
+
+    if (cfg.bootstrap and cfg.backend != .runtime_stub) return error.BootstrapNeedsRuntimeStub;
+    if (cfg.bootstrap and cfg.load.len == 0) return error.BootstrapNeedsLoadEntry;
 
     for (cfg.load) |load| {
         if (load.len == 0) return error.EmptyLoadEntry;

@@ -29,6 +29,9 @@
     // Embed the backing DLL and load DLLs into the generated runtime stub.
     .embed_dlls = false,
 
+    // Restart the host through suspended-process injection if load DLLs are missing.
+    .bootstrap = false,
+
     .forwarding = .{
         .include_ordinals = true,
         .include_data_exports = true,

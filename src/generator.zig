@@ -88,6 +88,10 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8) !Args {
             args.overrides.embed_dlls = true;
         } else if (std.mem.eql(u8, arg, "--no-embed") or std.mem.eql(u8, arg, "--no-embed-dlls") or std.mem.eql(u8, arg, "--no-embed_dlls")) {
             args.overrides.embed_dlls = false;
+        } else if (std.mem.eql(u8, arg, "--bootstrap")) {
+            args.overrides.bootstrap = true;
+        } else if (std.mem.eql(u8, arg, "--no-bootstrap")) {
+            args.overrides.bootstrap = false;
         } else if (std.mem.eql(u8, arg, "--resolved-forward-to")) {
             args.resolved_forward_to = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--export-source")) {
@@ -191,6 +195,7 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     try out.writer.print("output: {s}\n", .{config.outputName(cfg)});
     try out.writer.print("output_pair: {}\n", .{cfg.output_pair});
     try out.writer.print("embed_dlls: {}\n", .{cfg.embed_dlls});
+    try out.writer.print("bootstrap: {}\n", .{cfg.bootstrap});
     try out.writer.print("exports: {d}\n\n", .{table.exports.len});
 
     for (table.exports) |export_item| {
@@ -517,6 +522,7 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward_to: []const u8, cfg: confi
 
     try writeEmbeddedRuntimeConfig(&out.writer, cfg, forward_to);
 
+    try out.writer.print("pub const bootstrap: bool = {};\n", .{cfg.bootstrap});
     try out.writer.print("pub const export_count: usize = {d};\n\n", .{supportedExportCount(cfg, table)});
 
     try out.writer.print("pub const export_names = [_]?[:0]const u8{{\n", .{});
@@ -609,7 +615,7 @@ fn writeEmbeddedDllEntry(w: *std.Io.Writer, index: usize, path: []const u8) !voi
 }
 
 fn runtimeLoadName(cfg: config.Config, load: []const u8) []const u8 {
-    return if (cfg.embed_dlls) config.embeddedRuntimeName(load) else load;
+    return if (cfg.embed_dlls or cfg.bootstrap) config.embeddedRuntimeName(load) else load;
 }
 
 fn buildStubAsm(gpa: std.mem.Allocator, cfg: config.Config, table: pe.ExportTable) ![]u8 {
