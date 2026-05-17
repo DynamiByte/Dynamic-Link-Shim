@@ -5,6 +5,8 @@ const win32 = @import("win32.zig");
 
 const LOAD_THREAD_STARTED: u32 = 1;
 const BOOTSTRAP_STARTED: u32 = 1;
+const BOOTSTRAP_RETRY_SLEEP_MS: win32.DWORD = 10;
+const BOOTSTRAP_RETRY_COUNT: u32 = 1000;
 const EXTRACT_IDLE: u32 = 0;
 const EXTRACT_RUNNING: u32 = 1;
 const EXTRACT_DONE: u32 = 2;
@@ -34,6 +36,8 @@ pub export fn DllMain(hinstance: win32.HINSTANCE, reason: win32.DWORD, _: ?win32
 
 fn loadThread(_: ?*anyopaque) callconv(.winapi) win32.DWORD {
     bootstrapExitIfMissing();
+
+    if (cfg.bootstrap and bootstrapAlreadyAttempted()) _ = waitForConfiguredDllsAlreadyLoaded();
 
     if (!ensureEmbeddedDlls()) return 0;
 
@@ -251,8 +255,7 @@ fn bootstrapExitIfMissing() void {
     }
 
     if (bootstrapAlreadyAttempted()) {
-        showBootstrapError("DLS bootstrap already ran, but the configured DLLs are still not loaded");
-        win32.ExitProcess(127);
+        return;
     }
 
     if (!ensureEmbeddedDlls()) {
@@ -298,6 +301,16 @@ fn bootstrapAlreadyAttempted() bool {
     var name_buf: [128]u16 = undefined;
     const name = asciiToUtf16Z("DLS_BOOTSTRAPPED", name_buf[0..]) orelse return false;
     return win32.GetEnvironmentVariableW(name, null, 0) != 0;
+}
+
+fn waitForConfiguredDllsAlreadyLoaded() bool {
+    var attempt: u32 = 0;
+    while (attempt < BOOTSTRAP_RETRY_COUNT) : (attempt += 1) {
+        if (configuredDllsAlreadyLoaded()) return true;
+        win32.Sleep(BOOTSTRAP_RETRY_SLEEP_MS);
+    }
+
+    return configuredDllsAlreadyLoaded();
 }
 
 fn startBootstrap() bool {
