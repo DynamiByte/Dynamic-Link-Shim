@@ -22,9 +22,10 @@ var g_last_error: win32.DWORD = 0;
 
 pub export fn DllMain(hinstance: win32.HINSTANCE, reason: win32.DWORD, _: ?win32.LPVOID) callconv(.winapi) win32.BOOL {
     if (reason == win32.DLL_PROCESS_ATTACH) {
+        const bootstrapped = cfg.bootstrap and bootstrapAlreadyAttempted();
         @atomicStore(usize, &g_proxy_module, @intFromPtr(hinstance), .release);
         _ = win32.DisableThreadLibraryCalls(@ptrCast(hinstance));
-        if (shouldPreloadForwardModule()) _ = forwardModule();
+        if (shouldPreloadForwardModuleAtAttach(bootstrapped)) _ = forwardModule();
         if (@cmpxchgStrong(u32, &g_load_thread_started, 0, LOAD_THREAD_STARTED, .acq_rel, .acquire) == null) {
             if (shouldStartLoadThread()) {
                 if (win32.CreateThread(null, 0, &loadThread, null, 0, null)) |thread| {
@@ -300,12 +301,12 @@ fn basenameUtf16Z(path: [*:0]const u16) [*:0]const u16 {
     return @ptrCast(&path[start]);
 }
 
-fn shouldPreloadForwardModule() bool {
-    return !cfg.bootstrap and cfg.embedded.len == 0;
+fn shouldPreloadForwardModuleAtAttach(bootstrapped: bool) bool {
+    return !cfg.bootstrap or bootstrapped;
 }
 
 fn shouldStartLoadThread() bool {
-    return cfg.bootstrap or cfg.embedded.len != 0 or cfg.load.len != 0 or !shouldPreloadForwardModule();
+    return cfg.bootstrap or cfg.load.len != 0;
 }
 
 fn bootstrapAlreadyAttempted() bool {
