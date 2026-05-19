@@ -24,9 +24,12 @@ pub export fn DllMain(hinstance: win32.HINSTANCE, reason: win32.DWORD, _: ?win32
     if (reason == win32.DLL_PROCESS_ATTACH) {
         @atomicStore(usize, &g_proxy_module, @intFromPtr(hinstance), .release);
         _ = win32.DisableThreadLibraryCalls(@ptrCast(hinstance));
+        if (shouldPreloadForwardModule()) _ = forwardModule();
         if (@cmpxchgStrong(u32, &g_load_thread_started, 0, LOAD_THREAD_STARTED, .acq_rel, .acquire) == null) {
-            if (win32.CreateThread(null, 0, &loadThread, null, 0, null)) |thread| {
-                _ = win32.CloseHandle(thread);
+            if (shouldStartLoadThread()) {
+                if (win32.CreateThread(null, 0, &loadThread, null, 0, null)) |thread| {
+                    _ = win32.CloseHandle(thread);
+                }
             }
         }
     }
@@ -295,6 +298,14 @@ fn basenameUtf16Z(path: [*:0]const u16) [*:0]const u16 {
     }
 
     return @ptrCast(&path[start]);
+}
+
+fn shouldPreloadForwardModule() bool {
+    return !cfg.bootstrap and cfg.embedded.len == 0;
+}
+
+fn shouldStartLoadThread() bool {
+    return cfg.bootstrap or cfg.embedded.len != 0 or cfg.load.len != 0 or !shouldPreloadForwardModule();
 }
 
 fn bootstrapAlreadyAttempted() bool {
