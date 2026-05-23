@@ -68,7 +68,7 @@ To fold the backing DLL and loaded DLLs into the generated proxy:
 zig build -- --input "/Game/Library.dll" --load "Patch.dll" --embed-dlls
 ```
 
-This embeds `Library.og.dll` and each configured `--load` DLL as raw bytes inside `Library.dll`. At runtime, the proxy extracts them into the current folder only when they are missing, then loads them normally. Pass `--load` more than once to embed multiple patch DLLs.
+This embeds `Library.og.dll` and each configured `--load` DLL as raw bytes inside `Library.dll`. At runtime, the proxy extracts them into the current folder when they are missing or their SHA-256 hashes differ, then loads them normally. Pass `--load` more than once to embed multiple patch DLLs.
 
 ---
 
@@ -141,7 +141,7 @@ Useful command arguments:
 
 It builds a normal DLL with real exported stubs. At runtime, the proxy loads configured DLLs with `LoadLibraryW`, loads the backing DLL with `LoadLibraryW`, resolves exports with `GetProcAddress`, then jumps to the resolved export.
 
-When `embed_dlls` is enabled, this backend also embeds the backing DLL and configured loaded DLLs as raw bytes, extracts them into the current folder if they are missing, then continues through the same loading path.
+When `embed_dlls` is enabled, this backend also embeds the backing DLL and configured loaded DLLs as raw bytes, extracts them into the current folder if they are missing or their SHA-256 hashes differ, then continues through the same loading path.
 
 When `bootstrap` is enabled, this backend restarts the current executable suspended and injects the configured load DLLs if they are not already loaded. This is useful when the loaded DLL needs the same startup shape as a launcher/injector.
 

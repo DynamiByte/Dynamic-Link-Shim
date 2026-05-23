@@ -16,8 +16,14 @@ pub const WORD = u16;
 pub const DLL_PROCESS_ATTACH: DWORD = 1;
 pub const MB_OK: u32 = 0x00000000;
 pub const MB_ICONERROR: u32 = 0x00000010;
+pub const GENERIC_READ: DWORD = 0x80000000;
 pub const GENERIC_WRITE: DWORD = 0x40000000;
+pub const FILE_SHARE_READ: DWORD = 0x00000001;
+pub const FILE_SHARE_WRITE: DWORD = 0x00000002;
+pub const FILE_SHARE_DELETE: DWORD = 0x00000004;
 pub const CREATE_NEW: DWORD = 1;
+pub const CREATE_ALWAYS: DWORD = 2;
+pub const OPEN_EXISTING: DWORD = 3;
 pub const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
 pub const CREATE_SUSPENDED: DWORD = 0x00000004;
 pub const MEM_COMMIT: DWORD = 0x00001000;
@@ -25,6 +31,8 @@ pub const MEM_RESERVE: DWORD = 0x00002000;
 pub const MEM_RELEASE: DWORD = 0x00008000;
 pub const PAGE_READWRITE: DWORD = 0x00000004;
 pub const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
+pub const ERROR_FILE_NOT_FOUND: DWORD = 2;
+pub const ERROR_PATH_NOT_FOUND: DWORD = 3;
 pub const ERROR_FILE_EXISTS: DWORD = 80;
 pub const ERROR_ALREADY_EXISTS: DWORD = 183;
 pub const WAIT_OBJECT_0: DWORD = 0;
@@ -153,6 +161,13 @@ pub extern "kernel32" fn WriteFile(
     lp_buffer: [*]const u8,
     n_number_of_bytes_to_write: DWORD,
     lp_number_of_bytes_written: ?*DWORD,
+    lp_overlapped: ?*anyopaque,
+) callconv(.winapi) BOOL;
+pub extern "kernel32" fn ReadFile(
+    h_file: HANDLE,
+    lp_buffer: [*]u8,
+    n_number_of_bytes_to_read: DWORD,
+    lp_number_of_bytes_read: ?*DWORD,
     lp_overlapped: ?*anyopaque,
 ) callconv(.winapi) BOOL;
 pub extern "kernel32" fn DeleteFileW(lp_file_name: [*:0]const u16) callconv(.winapi) BOOL;

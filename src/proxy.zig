@@ -3,14 +3,23 @@ const std = @import("std");
 const cfg = @import("runtime_config");
 const win32 = @import("win32.zig");
 
+const Sha256 = std.crypto.hash.sha2.Sha256;
+const EmbeddedDigest = [Sha256.digest_length]u8;
 const LOAD_THREAD_STARTED: u32 = 1;
 const BOOTSTRAP_STARTED: u32 = 1;
 const BOOTSTRAP_RETRY_SLEEP_MS: win32.DWORD = 10;
 const BOOTSTRAP_RETRY_COUNT: u32 = 1000;
+const EMBEDDED_HASH_READ_SIZE: usize = 64 * 1024;
 const EXTRACT_IDLE: u32 = 0;
 const EXTRACT_RUNNING: u32 = 1;
 const EXTRACT_DONE: u32 = 2;
 const EXTRACT_FAILED: u32 = 3;
+
+const EmbeddedFileState = enum {
+    current,
+    stale_or_missing,
+    failed,
+};
 
 var g_load_thread_started: u32 = 0;
 var g_bootstrap_started: u32 = 0;
@@ -137,21 +146,85 @@ fn extractEmbeddedDll(embedded: cfg.EmbeddedDll) bool {
         return false;
     };
 
-    if (win32.GetFileAttributesW(path) != win32.INVALID_FILE_ATTRIBUTES) return true;
+    if (win32.GetFileAttributesW(path) != win32.INVALID_FILE_ATTRIBUTES) {
+        switch (embeddedFileState(path, embedded.bytes)) {
+            .current => return true,
+            .stale_or_missing => {},
+            .failed => {
+                showExtractError(embedded.path_text, @atomicLoad(win32.DWORD, &g_last_error, .acquire));
+                return false;
+            },
+        }
+    }
 
+    return writeEmbeddedDll(path, embedded);
+}
+
+fn embeddedFileState(path: [*:0]const u16, bytes: []const u8) EmbeddedFileState {
+    var existing_digest: EmbeddedDigest = undefined;
+    const hash_code = hashFile(path, &existing_digest);
+    if (hash_code != 0) {
+        if (hash_code == win32.ERROR_FILE_NOT_FOUND or hash_code == win32.ERROR_PATH_NOT_FOUND) {
+            return .stale_or_missing;
+        }
+
+        @atomicStore(win32.DWORD, &g_last_error, hash_code, .release);
+        return .failed;
+    }
+
+    var expected_digest: EmbeddedDigest = undefined;
+    var hasher = Sha256.init(.{});
+    hasher.update(bytes);
+    hasher.final(&expected_digest);
+
+    return if (std.mem.eql(u8, &existing_digest, &expected_digest)) .current else .stale_or_missing;
+}
+
+fn hashFile(path: [*:0]const u16, digest: *EmbeddedDigest) win32.DWORD {
+    const handle = win32.CreateFileW(
+        path,
+        win32.GENERIC_READ,
+        win32.FILE_SHARE_READ | win32.FILE_SHARE_WRITE | win32.FILE_SHARE_DELETE,
+        null,
+        win32.OPEN_EXISTING,
+        win32.FILE_ATTRIBUTE_NORMAL,
+        null,
+    );
+
+    if (handle == win32.INVALID_HANDLE_VALUE) return win32.GetLastError();
+    defer _ = win32.CloseHandle(handle);
+
+    var hasher = Sha256.init(.{});
+    var buf: [EMBEDDED_HASH_READ_SIZE]u8 = undefined;
+
+    while (true) {
+        var read: win32.DWORD = 0;
+        if (win32.ReadFile(handle, buf[0..].ptr, @intCast(buf.len), &read, null) == win32.FALSE) {
+            return win32.GetLastError();
+        }
+
+        if (read == 0) break;
+        const read_len: usize = @intCast(read);
+        hasher.update(buf[0..read_len]);
+    }
+
+    hasher.final(digest);
+    return 0;
+}
+
+fn writeEmbeddedDll(path: [*:0]const u16, embedded: cfg.EmbeddedDll) bool {
     const handle = win32.CreateFileW(
         path,
         win32.GENERIC_WRITE,
         0,
         null,
-        win32.CREATE_NEW,
+        win32.CREATE_ALWAYS,
         win32.FILE_ATTRIBUTE_NORMAL,
         null,
     );
 
     if (handle == win32.INVALID_HANDLE_VALUE) {
         const code = win32.GetLastError();
-        if (code == win32.ERROR_FILE_EXISTS or code == win32.ERROR_ALREADY_EXISTS) return true;
         @atomicStore(win32.DWORD, &g_last_error, code, .release);
         showExtractError(embedded.path_text, code);
         return false;
