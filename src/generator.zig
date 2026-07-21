@@ -2,6 +2,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const pe = @import("pe.zig");
+const surface = @import("surface.zig");
 
 const Mode = enum {
     generate,
@@ -9,6 +10,7 @@ const Mode = enum {
     copy,
     prepare_input_dir,
     clean_generated,
+    surface,
 };
 
 const Args = struct {
@@ -19,6 +21,7 @@ const Args = struct {
     emit_def: ?[]const u8 = null,
     emit_runtime: ?[]const u8 = null,
     emit_asm: ?[]const u8 = null,
+    emit_surface: ?[]const u8 = null,
     copy_source: ?[]const u8 = null,
     copy_output_name: ?[]const u8 = null,
     copy_dir: ?[]const u8 = null,
@@ -54,6 +57,7 @@ pub fn main(init: std.process.Init) !void {
         .copy => try copyBuiltDll(gpa, io, args),
         .prepare_input_dir => try prepareInputDir(gpa, io, args),
         .clean_generated => try cleanGenerated(io, args.clean_dir),
+        .surface => try compileSurface(gpa, io, args),
     }
 }
 
@@ -68,6 +72,8 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8) !Args {
             args.config_path = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--input")) {
             args.overrides.input = takeValue(argv, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--backing")) {
+            args.overrides.backing = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--forward")) {
             args.overrides.forward = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--output")) {
@@ -100,6 +106,9 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8) !Args {
             args.emit_runtime = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--emit-asm")) {
             args.emit_asm = takeValue(argv, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--emit-surface")) {
+            args.mode = .surface;
+            args.emit_surface = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--inspect")) {
             args.mode = .inspect;
         } else if (std.mem.eql(u8, arg, "--copy")) {
@@ -244,9 +253,36 @@ fn resolveExportSource(
 }
 
 fn loadExports(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !pe.ExportTable {
+    if (surface.isPath(path)) {
+        const loaded = surface.loadFile(gpa, io, path) catch |err| {
+            std.process.fatal("unable to parse export surface from {s}: {t}", .{ path, err });
+        };
+        return loaded.table;
+    }
+
     return pe.parseExportsFile(gpa, io, path) catch |err| {
         std.process.fatal("unable to parse exports from {s}: {t}", .{ path, err });
     };
+}
+
+fn compileSurface(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
+    const cfg = try loadConfig(gpa, io, args);
+    if (surface.isPath(cfg.input)) std.process.fatal("surface input must be a DLL: {s}", .{cfg.input});
+
+    const source = args.export_source orelse cfg.input;
+    const table = pe.parseExportsFile(gpa, io, source) catch |err| {
+        std.process.fatal("unable to parse exports from {s}: {t}", .{ source, err });
+    };
+    defer table.deinit(gpa);
+
+    const target_name = std.fs.path.basenameWindows(cfg.input);
+    const bytes = surface.encode(gpa, target_name, table) catch |err| {
+        std.process.fatal("unable to compile export surface from {s}: {t}", .{ source, err });
+    };
+    defer gpa.free(bytes);
+
+    const output = args.emit_surface orelse std.process.fatal("missing --emit-surface", .{});
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = output, .data = bytes });
 }
 
 fn requireSupportedArchitecture(cfg: config.Config, table: pe.ExportTable) void {

@@ -2,6 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("src/config.zig");
+const surface = @import("src/surface.zig");
 
 const WindowsAbi = enum {
     native,
@@ -81,6 +82,11 @@ fn addGeneratorArgs(
         run.addArg(value);
     }
 
+    if (overrides.backing) |value| {
+        run.addArg("--backing");
+        run.addArg(value);
+    }
+
     if (overrides.forward) |value| {
         run.addArg("--forward");
         run.addArg(value);
@@ -152,6 +158,8 @@ fn parseForwardedArgs(allocator: std.mem.Allocator, args: ?[]const []const u8) C
             parsed.config_path = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--input")) {
             parsed.overrides.input = readValue(values, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--backing")) {
+            parsed.overrides.backing = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--forward")) {
             parsed.overrides.forward = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--output")) {
@@ -239,6 +247,7 @@ pub const ProxyOptions = struct {
     optimize: std.builtin.OptimizeMode = .ReleaseSmall,
     input: []const u8,
     export_source: std.Build.LazyPath,
+    backing_source: ?std.Build.LazyPath = null,
     forward: ?[]const u8 = null,
     output: ?[]const u8 = null,
     method: Method = .runtime_stub,
@@ -301,6 +310,7 @@ pub fn addProxy(
     const forward_name = config.forwardName(b.allocator, app_config) catch |err|
         std.process.fatal("unable to resolve forward: {t}", .{err});
     const backing_name = std.fs.path.basenameWindows(forward_name);
+    const backing_source = options.backing_source orelse options.export_source;
     const runtime_forward = if (options.output_pair or options.embed_dlls or options.bootstrap) backing_name else forward_name;
 
     const generator = b.addExecutable(.{
@@ -327,7 +337,7 @@ pub fn addProxy(
             .dll = dll,
             .compile = null,
             .output_name = output_name,
-            .backing = if (options.output_pair) options.export_source else null,
+            .backing = if (options.output_pair) backing_source else null,
             .backing_name = if (options.output_pair) backing_name else null,
         };
     }
@@ -345,7 +355,7 @@ pub fn addProxy(
         .optimize = options.optimize,
     });
     if (options.embed_dlls) {
-        addEmbeddedDllImportPath(b, runtime_module, 0, options.export_source);
+        addEmbeddedDllImportPath(b, runtime_module, 0, backing_source);
         for (options.load, 0..) |load, idx| {
             const source = load.source orelse std.process.fatal("embedded load entry needs a source: {s}", .{load.name});
             addEmbeddedDllImportPath(b, runtime_module, idx + 1, source);
@@ -372,7 +382,7 @@ pub fn addProxy(
         .dll = dll.getEmittedBin(),
         .compile = dll,
         .output_name = output_name,
-        .backing = if (options.output_pair) options.export_source else null,
+        .backing = if (options.output_pair) backing_source else null,
         .backing_name = if (options.output_pair) backing_name else null,
     };
 }
@@ -392,6 +402,32 @@ fn addEmbeddedDllImportPath(
     source: std.Build.LazyPath,
 ) void {
     module.addAnonymousImport(b.fmt("dls_embed_{d}", .{index}), .{ .root_source_file = source });
+}
+
+fn applySurfaceDefaults(
+    b: *std.Build,
+    config_path: []const u8,
+    overrides: *config.Overrides,
+    initial: config.Config,
+) config.Config {
+    if (!surface.isPath(initial.input)) return initial;
+
+    const loaded = surface.loadFile(b.allocator, b.graph.io, initial.input) catch |err|
+        std.process.fatal("unable to read export surface {s}: {t}", .{ initial.input, err });
+    defer loaded.deinit(b.allocator);
+
+    var changed = false;
+    if (initial.output == null) {
+        overrides.output = b.allocator.dupe(u8, loaded.target_name) catch @panic("OOM");
+        changed = true;
+    }
+    if (initial.forward == null) {
+        const target = loaded.target_name;
+        overrides.forward = std.fmt.allocPrint(b.allocator, "{s}.og.dll", .{target[0 .. target.len - 4]}) catch @panic("OOM");
+        changed = true;
+    }
+
+    return if (changed) loadBuildConfig(b, config_path, overrides.*) else initial;
 }
 
 pub fn build(b: *std.Build) void {
@@ -417,7 +453,8 @@ pub fn build(b: *std.Build) void {
     if (b.option(config.Method, "method", "Proxy generation method")) |value| {
         overrides.method = value;
     }
-    var app_config = loadBuildConfig(b, config_path, overrides);
+    var app_config = applySurfaceDefaults(b, config_path, &overrides, loadBuildConfig(b, config_path, overrides));
+    const input_is_surface = surface.isPath(app_config.input);
     if (cli_options.copy_to_input_dir and app_config.output_pair) {
         std.process.fatal("use --output-pair or --copy-to-input-dir, not both", .{});
     }
@@ -430,6 +467,9 @@ pub fn build(b: *std.Build) void {
     if (app_config.bootstrap and app_config.method == .pe_forwarder) {
         std.process.fatal("bootstrap needs the runtime_stub method", .{});
     }
+    if (cli_options.copy_to_input_dir and input_is_surface) {
+        std.process.fatal("copy-to-input-dir needs the original input DLL, not a .dls surface", .{});
+    }
     if (cli_options.copy_to_input_dir) {
         app_config.copy_to = config.inputDirectory(app_config);
         overrides.copy_to = app_config.copy_to;
@@ -439,7 +479,9 @@ pub fn build(b: *std.Build) void {
     const forward_name = config.forwardName(b.allocator, app_config) catch |err| {
         std.process.fatal("unable to resolve forward: {t}", .{err});
     };
-    const export_source_name = if (cli_options.copy_to_input_dir)
+    const export_source_name = if (input_is_surface)
+        app_config.input
+    else if (cli_options.copy_to_input_dir)
         forward_name
     else if (pathExists(b.graph.io, forward_name))
         forward_name
@@ -447,6 +489,13 @@ pub fn build(b: *std.Build) void {
         app_config.input
     else
         std.process.fatal("unable to find export source DLL: {s} or {s}", .{ app_config.input, forward_name });
+    const backing_source_name: ?[]const u8 = app_config.backing orelse if (input_is_surface) null else export_source_name;
+    if ((app_config.output_pair or app_config.embed_dlls) and backing_source_name == null) {
+        std.process.fatal("output-pair and embed-dlls need --backing when input is a .dls surface", .{});
+    }
+    if (backing_source_name) |backing| {
+        if (!pathExists(b.graph.io, backing)) std.process.fatal("unable to find backing DLL: {s}", .{backing});
+    }
     const backing_output_name = std.fs.path.basenameWindows(forward_name);
     const runtime_forward_name = if (app_config.output_pair or app_config.embed_dlls or app_config.bootstrap) backing_output_name else forward_name;
 
@@ -458,6 +507,20 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseSmall,
         }),
     });
+
+    if (!input_is_surface) {
+        const surface_name = config.surfaceName(b.allocator, app_config) catch |err|
+            std.process.fatal("unable to resolve surface output: {t}", .{err});
+        const compile_surface = b.addRunArtifact(generator);
+        addGeneratorArgs(compile_surface, config_path, overrides);
+        compile_surface.addArg("--export-source");
+        compile_surface.addArg(export_source_name);
+        compile_surface.addArg("--emit-surface");
+        const surface_output = compile_surface.addOutputFileArg(surface_name);
+        const install_surface = b.addInstallFileWithDir(surface_output, .bin, surface_name);
+        const surface_step = b.step("surface", "Compile the configured input DLL export surface");
+        surface_step.dependOn(&install_surface.step);
+    }
 
     const prepare_input_dir = if (cli_options.copy_to_input_dir) blk: {
         const prepare = b.addRunArtifact(generator);
@@ -482,7 +545,7 @@ pub fn build(b: *std.Build) void {
         const install_dll = b.addInstallFileWithDir(dll_output, .bin, output_name);
         b.getInstallStep().dependOn(&install_dll.step);
         if (app_config.output_pair) {
-            const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = export_source_name }, .bin, backing_output_name);
+            const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = backing_source_name.? }, .bin, backing_output_name);
             b.getInstallStep().dependOn(&install_backing.step);
         }
 
@@ -497,7 +560,7 @@ pub fn build(b: *std.Build) void {
             if (app_config.output_pair) {
                 const copy_backing = b.addRunArtifact(generator);
                 copy_backing.addArg("--copy");
-                copy_backing.addArg(export_source_name);
+                copy_backing.addArg(backing_source_name.?);
                 copy_backing.addArg(backing_output_name);
                 copy_backing.addArg(copy_to);
                 b.getInstallStep().dependOn(&copy_backing.step);
@@ -527,7 +590,7 @@ pub fn build(b: *std.Build) void {
             .target = dll_target,
             .optimize = optimize,
         });
-        addEmbeddedDllImports(b, runtime_module, app_config, export_source_name);
+        addEmbeddedDllImports(b, runtime_module, app_config, backing_source_name orelse export_source_name);
 
         const dll = b.addLibrary(.{
             .linkage = .dynamic,
@@ -548,7 +611,7 @@ pub fn build(b: *std.Build) void {
         const install_dll = b.addInstallFileWithDir(dll.getEmittedBin(), .bin, output_name);
         b.getInstallStep().dependOn(&install_dll.step);
         if (app_config.output_pair) {
-            const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = export_source_name }, .bin, backing_output_name);
+            const install_backing = b.addInstallFileWithDir(.{ .cwd_relative = backing_source_name.? }, .bin, backing_output_name);
             b.getInstallStep().dependOn(&install_backing.step);
         }
 
@@ -563,7 +626,7 @@ pub fn build(b: *std.Build) void {
             if (app_config.output_pair) {
                 const copy_backing = b.addRunArtifact(generator);
                 copy_backing.addArg("--copy");
-                copy_backing.addArg(export_source_name);
+                copy_backing.addArg(backing_source_name.?);
                 copy_backing.addArg(backing_output_name);
                 copy_backing.addArg(copy_to);
                 b.getInstallStep().dependOn(&copy_backing.step);
@@ -571,7 +634,7 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    const inspect = b.step("inspect", "Parse the configured input DLL and print the export map");
+    const inspect = b.step("inspect", "Print the configured DLL or .dls export map");
     const inspect_run = b.addRunArtifact(generator);
     addGeneratorArgs(inspect_run, config_path, overrides);
     inspect_run.addArg("--resolved-forward");

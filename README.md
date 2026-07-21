@@ -32,6 +32,22 @@ zig build -- --input "Library.dll" --load "Patch.dll"
 
 DLS reads exports from `Library.dll`, generates a proxy named `Library.dll`, forwards the original exports to the backing DLL, and loads `Patch.dll` when the proxy starts.
 
+To keep the reusable export surface without storing the source DLL, compile it once:
+
+```bash
+zig build surface -- --input "Library.dll"
+```
+
+This writes `zig-out/bin/Library.dls`. A `.dls` file is a compact binary description of the target DLL, architecture, ordinal range, and exports. It contains no source DLL bytes or source hash.
+
+Use it anywhere the source DLL would otherwise be needed for proxy generation:
+
+```bash
+zig build -- --input "Library.dls" --load "Patch.dll"
+```
+
+The stored target name supplies the default `Library.dll` output and `Library.og.dll` forward target. Renaming the `.dls` file does not change that identity. `output_pair` and `embed_dlls` still need the original bytes; provide them with `backing` or `--backing`.
+
 To load every `*.dls.dll` file beside the proxy, enable DLS autoloading:
 
 ```bash
@@ -86,7 +102,8 @@ DLS reads `config.zon` beside `build.zig` by default. The file in this repo is t
 
 Main fields:
 
-- `input`: DLL to read exports from
+- `input`: DLL or compiled `.dls` export surface
+- `backing`: optional original DLL bytes used by `output_pair` and `embed_dlls`
 - `forward`: original DLL the proxy forwards to
 - `output`: generated proxy DLL name
 - `method`: `runtime_stub` by default, or `pe_forwarder`
@@ -130,6 +147,7 @@ zig build -- --input "Library.dll" --forward "Library.og.dll" --load "PatchA.dll
 Useful command arguments:
 
 - `--input [PATH]`
+- `--backing [PATH]`
 - `--forward [PATH]`
 - `--output [NAME]`
 - `--load [PATH]`; can be repeated
@@ -256,6 +274,12 @@ Inspect the configured export map without building the proxy:
 zig build inspect
 ```
 
+Compile the configured DLL into a reusable binary export surface:
+
+```bash
+zig build surface
+```
+
 ## Build API
 
 Projects using DLS as a Zig dependency can add a proxy directly to their build graph:
@@ -278,3 +302,5 @@ b.getInstallStep().dependOn(&install.step);
 ```
 
 The returned proxy includes its generated DLL path, output names, optional backing DLL, and the runtime-stub compile step when one exists. Consumers can attach resources to `proxy.compile` without reproducing DLS's generator and linker setup.
+
+`export_source` may point to either the original DLL or a compiled `.dls` file. When using `.dls` with `output_pair` or `embed_dlls`, set `backing_source` to the original DLL explicitly.

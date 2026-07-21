@@ -1,6 +1,9 @@
 .{
-    // DLL to read exports from.
+    // DLL to read exports from, or a compiled .dls surface.
     .input = "Library.dll",
+
+    // Optional original DLL bytes for output-pair or embed-dlls with .dls input.
+    .backing = null,
 
     // Real DLL to forward exports to. Null derives from input.
     // (Library.dll > Library.og.dll)

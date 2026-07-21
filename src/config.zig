@@ -14,6 +14,7 @@ pub const Forwarding = struct {
 
 pub const Config = struct {
     input: []const u8,
+    backing: ?[]const u8 = null,
     forward: ?[]const u8 = null,
     output: ?[]const u8 = null,
     load: []const []const u8 = &.{},
@@ -29,6 +30,7 @@ pub const Config = struct {
 
 pub const Overrides = struct {
     input: ?[]const u8 = null,
+    backing: ?[]const u8 = null,
     forward: ?[]const u8 = null,
     output: ?[]const u8 = null,
     load: ?[]const []const u8 = null,
@@ -72,6 +74,7 @@ pub fn loadFile(
 
 fn applyOverrides(gpa: std.mem.Allocator, cfg: *Config, overrides: Overrides) !void {
     if (overrides.input) |value| cfg.input = value;
+    if (overrides.backing) |value| cfg.backing = value;
     if (overrides.forward) |value| cfg.forward = value;
     if (overrides.output) |value| cfg.output = value;
     if (overrides.autoload) |value| cfg.autoload = value;
@@ -88,15 +91,23 @@ fn applyOverrides(gpa: std.mem.Allocator, cfg: *Config, overrides: Overrides) !v
 
 fn validate(cfg: Config) !void {
     if (cfg.input.len == 0) return error.EmptyInput;
+    if (cfg.backing) |backing| {
+        if (backing.len == 0) return error.EmptyBacking;
+    }
     if (cfg.forward) |forward| {
         if (forward.len == 0) return error.EmptyForward;
-    } else if (!endsWithIgnoreCase(cfg.input, ".dll")) {
+    } else if (!endsWithIgnoreCase(cfg.input, ".dll") and !endsWithIgnoreCase(cfg.input, ".dls")) {
         return error.InputMustBeDllForDefaultForward;
     }
 
-    const resolved_output = outputName(cfg);
-    if (resolved_output.len == 0) return error.EmptyOutput;
-    if (!endsWithIgnoreCase(resolved_output, ".dll")) return error.OutputMustBeDll;
+    if (cfg.output) |output| {
+        if (output.len == 0) return error.EmptyOutput;
+        if (!endsWithIgnoreCase(output, ".dll")) return error.OutputMustBeDll;
+    } else if (!endsWithIgnoreCase(cfg.input, ".dls")) {
+        const resolved_output = outputName(cfg);
+        if (resolved_output.len == 0) return error.EmptyOutput;
+        if (!endsWithIgnoreCase(resolved_output, ".dll")) return error.OutputMustBeDll;
+    }
 
     if (cfg.load_import) |load_import| {
         if (load_import.len == 0) return error.EmptyLoadImport;
@@ -123,6 +134,12 @@ pub fn forwardName(gpa: std.mem.Allocator, cfg: Config) ![]const u8 {
     if (cfg.forward) |forward| return gpa.dupe(u8, forward);
     if (!endsWithIgnoreCase(cfg.input, ".dll")) return error.InputMustBeDllForDefaultForward;
     return std.fmt.allocPrint(gpa, "{s}.og.dll", .{cfg.input[0 .. cfg.input.len - 4]});
+}
+
+pub fn surfaceName(gpa: std.mem.Allocator, cfg: Config) ![]const u8 {
+    const input_name = std.fs.path.basenameWindows(cfg.input);
+    if (!endsWithIgnoreCase(input_name, ".dll")) return error.SurfaceInputMustBeDll;
+    return std.fmt.allocPrint(gpa, "{s}.dls", .{input_name[0 .. input_name.len - 4]});
 }
 
 pub fn embeddedRuntimeName(path: []const u8) []const u8 {
