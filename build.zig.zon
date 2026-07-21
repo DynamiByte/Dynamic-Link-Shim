@@ -1,0 +1,7 @@
+.{
+    .name = .dynamic_link_shim,
+    .version = "0.5.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0xc6f5cfcdeccbbe4c,
+}

@@ -255,3 +255,26 @@ Inspect the configured export map without building the proxy:
 ```bash
 zig build inspect
 ```
+
+## Build API
+
+Projects using DLS as a Zig dependency can add a proxy directly to their build graph:
+
+```zig
+const dls = @import("dynamic_link_shim");
+
+const dependency = b.dependency("dynamic_link_shim", .{});
+const proxy = dls.addProxy(b, dependency, .{
+    .target = target,
+    .input = "UnityPlayer.dll",
+    .export_source = b.path("assets/UnityPlayer.dll"),
+    .forward = "UnityPlayer.og.dll",
+    .load = &.{.{ .name = "Patch.dll", .source = patch.getEmittedBin() }},
+    .bootstrap = true,
+});
+
+const install = b.addInstallFileWithDir(proxy.dll, .bin, proxy.output_name);
+b.getInstallStep().dependOn(&install.step);
+```
+
+The returned proxy includes its generated DLL path, output names, optional backing DLL, and the runtime-stub compile step when one exists. Consumers can attach resources to `proxy.compile` without reproducing DLS's generator and linker setup.

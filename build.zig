@@ -226,7 +226,177 @@ fn addEmbeddedDllImport(
     });
 }
 
+pub const Method = config.Method;
+pub const Forwarding = config.Forwarding;
+
+pub const Load = struct {
+    name: []const u8,
+    source: ?std.Build.LazyPath = null,
+};
+
+pub const ProxyOptions = struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode = .ReleaseSmall,
+    input: []const u8,
+    export_source: std.Build.LazyPath,
+    forward: ?[]const u8 = null,
+    output: ?[]const u8 = null,
+    method: Method = .runtime_stub,
+    load: []const Load = &.{},
+    autoload: bool = false,
+    load_import: ?[]const u8 = "#1",
+    output_pair: bool = false,
+    embed_dlls: bool = false,
+    bootstrap: bool = false,
+    forwarding: Forwarding = .{},
+};
+
+pub const Proxy = struct {
+    dll: std.Build.LazyPath,
+    compile: ?*std.Build.Step.Compile,
+    output_name: []const u8,
+    backing: ?std.Build.LazyPath,
+    backing_name: ?[]const u8,
+};
+
+pub fn addProxy(
+    b: *std.Build,
+    dependency: *std.Build.Dependency,
+    options: ProxyOptions,
+) Proxy {
+    if (options.target.result.os.tag != .windows) {
+        std.process.fatal("DLS builds Windows DLLs; select a Windows target", .{});
+    }
+    if (options.target.result.cpu.arch != .x86_64) {
+        std.process.fatal("DLS currently supports x86_64 Windows only", .{});
+    }
+    if (options.embed_dlls and options.method != .runtime_stub) {
+        std.process.fatal("embedded DLL extraction needs the runtime_stub method", .{});
+    }
+    if (options.bootstrap and options.method != .runtime_stub) {
+        std.process.fatal("bootstrap needs the runtime_stub method", .{});
+    }
+    if (options.autoload and options.method != .runtime_stub) {
+        std.process.fatal("autoload needs the runtime_stub method", .{});
+    }
+
+    const load_names = b.allocator.alloc([]const u8, options.load.len) catch @panic("OOM");
+    for (options.load, load_names) |load, *name| name.* = load.name;
+
+    const app_config: config.Config = .{
+        .input = options.input,
+        .forward = options.forward,
+        .output = options.output,
+        .load = load_names,
+        .autoload = options.autoload,
+        .load_import = options.load_import,
+        .output_pair = options.output_pair,
+        .embed_dlls = options.embed_dlls,
+        .bootstrap = options.bootstrap,
+        .method = options.method,
+        .forwarding = options.forwarding,
+    };
+    const config_file = writeProxyConfig(b, app_config);
+    const output_name = config.outputName(app_config);
+    const forward_name = config.forwardName(b.allocator, app_config) catch |err|
+        std.process.fatal("unable to resolve forward: {t}", .{err});
+    const backing_name = std.fs.path.basenameWindows(forward_name);
+    const runtime_forward = if (options.output_pair or options.embed_dlls or options.bootstrap) backing_name else forward_name;
+
+    const generator = b.addExecutable(.{
+        .name = "dls-generate",
+        .root_module = b.createModule(.{
+            .root_source_file = dependency.path("src/generator.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+
+    const generate = b.addRunArtifact(generator);
+    generate.addArg("--config");
+    generate.addFileArg(config_file);
+    generate.addArg("--resolved-forward");
+    generate.addArg(runtime_forward);
+    generate.addArg("--export-source");
+    generate.addFileArg(options.export_source);
+
+    if (options.method == .pe_forwarder) {
+        generate.addArg("--emit-dll");
+        const dll = generate.addOutputFileArg(output_name);
+        return .{
+            .dll = dll,
+            .compile = null,
+            .output_name = output_name,
+            .backing = if (options.output_pair) options.export_source else null,
+            .backing_name = if (options.output_pair) backing_name else null,
+        };
+    }
+
+    generate.addArg("--emit-def");
+    const def_file = generate.addOutputFileArg("proxy.def");
+    generate.addArg("--emit-runtime");
+    const runtime_config = generate.addOutputFileArg("runtime_config.zig");
+    generate.addArg("--emit-asm");
+    const stub_asm = generate.addOutputFileArg("runtime_stubs.s");
+
+    const runtime_module = b.createModule(.{
+        .root_source_file = runtime_config,
+        .target = options.target,
+        .optimize = options.optimize,
+    });
+    if (options.embed_dlls) {
+        addEmbeddedDllImportPath(b, runtime_module, 0, options.export_source);
+        for (options.load, 0..) |load, idx| {
+            const source = load.source orelse std.process.fatal("embedded load entry needs a source: {s}", .{load.name});
+            addEmbeddedDllImportPath(b, runtime_module, idx + 1, source);
+        }
+    }
+
+    const dll = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "DLS",
+        .root_module = b.createModule(.{
+            .root_source_file = dependency.path("src/proxy.zig"),
+            .target = options.target,
+            .optimize = options.optimize,
+        }),
+        .win32_module_definition = def_file,
+    });
+    dll.root_module.addImport("runtime_config", runtime_module);
+    dll.root_module.linkSystemLibrary("kernel32", .{});
+    dll.root_module.linkSystemLibrary("user32", .{});
+    dll.root_module.addAssemblyFile(stub_asm);
+    dll.dll_export_fns = false;
+
+    return .{
+        .dll = dll.getEmittedBin(),
+        .compile = dll,
+        .output_name = output_name,
+        .backing = if (options.output_pair) options.export_source else null,
+        .backing_name = if (options.output_pair) backing_name else null,
+    };
+}
+
+fn writeProxyConfig(b: *std.Build, app_config: config.Config) std.Build.LazyPath {
+    var out: std.Io.Writer.Allocating = .init(b.allocator);
+    defer out.deinit();
+    std.zon.stringify.serialize(app_config, .{}, &out.writer) catch @panic("OOM");
+    const contents = out.toOwnedSlice() catch @panic("OOM");
+    return b.addWriteFiles().add("dls-config.zon", contents);
+}
+
+fn addEmbeddedDllImportPath(
+    b: *std.Build,
+    module: *std.Build.Module,
+    index: usize,
+    source: std.Build.LazyPath,
+) void {
+    module.addAnonymousImport(b.fmt("dls_embed_{d}", .{index}), .{ .root_source_file = source });
+}
+
 pub fn build(b: *std.Build) void {
+    if (b.dep_prefix.len != 0) return;
+
     const defaults = defaultTargets();
     const base_target = b.standardTargetOptions(.{ .default_target = defaults.target });
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Build optimization mode") orelse .ReleaseSmall;
