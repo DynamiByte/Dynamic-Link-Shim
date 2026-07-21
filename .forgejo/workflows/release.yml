@@ -1,0 +1,240 @@
+name: Release DLS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dls-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: zig-0.16-alpine
+    timeout-minutes: 10
+
+    env:
+      RELEASE_BRANCH: ${{ forgejo.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          github-server-url: https://git.dynamibyte.com
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check release commit
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f build.zig.zon
+          test -f README.md
+          test -f .forgejo/workflows/release-body.md
+
+          mapfile -t versions < <(
+            sed -nE \
+              's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*,[[:space:]]*$/\1/p' \
+              build.zig.zon
+          )
+
+          if [ "${#versions[@]}" -ne 1 ]; then
+            echo 'build.zig.zon needs one version' >&2
+            exit 1
+          fi
+
+          version="${versions[0]}"
+          subject="$(git log -1 --format=%s)"
+          event_name="${FORGEJO_EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
+          branch="${RELEASE_BRANCH:-${FORGEJO_REF_NAME:-${GITHUB_REF_NAME:-}}}"
+
+          if [ "$branch" != 'main' ]; then
+            echo 'releases need main' >&2
+            exit 1
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'bad version' >&2
+            exit 1
+          fi
+
+          if [ "$event_name" != 'workflow_dispatch' ]; then
+            if [[ ! "$subject" =~ ^Bump\ version\ to\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              echo 'enabled=false' >> "$GITHUB_OUTPUT"
+              echo "skip: $subject"
+              exit 0
+            fi
+
+            if [ "${BASH_REMATCH[1]}" != "$version" ]; then
+              echo "commit says ${BASH_REMATCH[1]}, zon says $version" >&2
+              exit 1
+            fi
+          fi
+
+          tag="v$version"
+
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            echo "$tag already exists" >&2
+            exit 1
+          fi
+
+          if [[ "$subject" =~ ^Bump\ version\ to\ [0-9]+\.[0-9]+\.[0-9]+$ ]] && \
+            git rev-parse --verify HEAD^ >/dev/null 2>&1
+          then
+            changelog_end="$(git rev-parse HEAD^)"
+          else
+            changelog_end="$(git rev-parse HEAD)"
+          fi
+
+          previous_tag=''
+
+          while IFS= read -r candidate; do
+            if [[ "$candidate" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              previous_tag="$candidate"
+              break
+            fi
+          done < <(
+            git tag \
+              --merged "$changelog_end" \
+              --sort=-version:refname
+          )
+
+          cp \
+            .forgejo/workflows/release-body.md \
+            release-body.generated.md
+
+          readme_url="https://dynamibyte.com/Dynamic-Link-Shim/blob/$tag/README.md"
+
+          sed -i \
+            -e "s|{{VERSION}}|$version|g" \
+            -e "s|{{README_URL}}|$readme_url|g" \
+            release-body.generated.md
+
+          if [ -n "$previous_tag" ]; then
+            changelog_range="$previous_tag..$changelog_end"
+          else
+            changelog_range="$changelog_end"
+          fi
+
+          while IFS= read -r title; do
+            [ -n "$title" ] || continue
+            if [[ "$title" == 'Bump version to '* ]]; then
+              continue
+            fi
+            printf -- '- %s\n' "$title" >> release-body.generated.md
+          done < <(
+            git log \
+              --first-parent \
+              --reverse \
+              --format=%s \
+              "$changelog_range"
+          )
+
+          if [ -n "$previous_tag" ]; then
+            printf \
+              '\nSee the full diff [here](https://dynamibyte.com/Dynamic-Link-Shim/compare/%s...%s)\n' \
+              "$previous_tag" \
+              "$tag" \
+              >> release-body.generated.md
+          fi
+
+          {
+            echo 'enabled=true'
+            echo "tag=$tag"
+            echo "name=Version $version"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "release $tag"
+
+      - name: Publish release
+        if: steps.release.outputs.enabled == 'true'
+        shell: bash
+        env:
+          RELEASE_NAME: ${{ steps.release.outputs.name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          : "${FORGEJO_REPOSITORY:?FORGEJO_REPOSITORY is missing}"
+          : "${FORGEJO_SHA:?FORGEJO_SHA is missing}"
+          : "${FORGEJO_TOKEN:?FORGEJO_TOKEN is missing}"
+
+          api="https://git.dynamibyte.com/api/v1/repos/$FORGEJO_REPOSITORY"
+          auth="Authorization: token $FORGEJO_TOKEN"
+          response="$(mktemp)"
+          payload="$(mktemp)"
+          trap 'rm -f "$response" "$payload"' EXIT
+
+          status="$(
+            curl \
+              --silent \
+              --show-error \
+              --output "$response" \
+              --write-out '%{http_code}' \
+              --header "$auth" \
+              --header 'Accept: application/json' \
+              "$api/releases/tags/$RELEASE_TAG"
+          )"
+
+          case "$status" in
+            404)
+              ;;
+            200)
+              echo "$RELEASE_TAG already exists" >&2
+              exit 1
+              ;;
+            *)
+              cat "$response" >&2
+              echo "release check: http $status" >&2
+              exit 1
+              ;;
+          esac
+
+          jq -n \
+            --arg tag "$RELEASE_TAG" \
+            --arg commit "$FORGEJO_SHA" \
+            --arg name "$RELEASE_NAME" \
+            --rawfile body release-body.generated.md \
+            '{
+              tag_name: $tag,
+              target_commitish: $commit,
+              name: $name,
+              body: $body,
+              draft: false,
+              prerelease: false
+            }' \
+            > "$payload"
+
+          status="$(
+            curl \
+              --silent \
+              --show-error \
+              --request POST \
+              --output "$response" \
+              --write-out '%{http_code}' \
+              --header "$auth" \
+              --header 'Accept: application/json' \
+              --header 'Content-Type: application/json' \
+              --data-binary "@$payload" \
+              "$api/releases"
+          )"
+
+          if [ "$status" != '201' ]; then
+            cat "$response" >&2
+            echo "create release: http $status" >&2
+            exit 1
+          fi
+
+          echo "published $RELEASE_TAG"
+
+  mirror:
+    needs: release
+    uses: ./.forgejo/workflows/mirror.yml
+    secrets: inherit

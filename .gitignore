@@ -1,2 +1,11 @@
-/*/
+/*
+
+!/.forgejo/
 !/src/
+
+!/.gitignore
+!/build.zig
+!/build.zig.zon
+!/config.zon
+!/LICENSE.txt
+!/README.md
