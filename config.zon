@@ -17,6 +17,9 @@
         "Patch.dll",
     },
 
+    // Load every *.dls.dll file beside the proxy DLL.
+    .autoload = false,
+
     // Used only by .pe_forwarder.
     .load_import = "#1",
 

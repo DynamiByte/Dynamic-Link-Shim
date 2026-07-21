@@ -24,6 +24,7 @@ pub const FILE_SHARE_DELETE: DWORD = 0x00000004;
 pub const CREATE_NEW: DWORD = 1;
 pub const CREATE_ALWAYS: DWORD = 2;
 pub const OPEN_EXISTING: DWORD = 3;
+pub const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x00000010;
 pub const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
 pub const CREATE_SUSPENDED: DWORD = 0x00000004;
 pub const MEM_COMMIT: DWORD = 0x00001000;
@@ -33,6 +34,7 @@ pub const PAGE_READWRITE: DWORD = 0x00000004;
 pub const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
 pub const ERROR_FILE_NOT_FOUND: DWORD = 2;
 pub const ERROR_PATH_NOT_FOUND: DWORD = 3;
+pub const ERROR_NO_MORE_FILES: DWORD = 18;
 pub const ERROR_FILE_EXISTS: DWORD = 80;
 pub const ERROR_ALREADY_EXISTS: DWORD = 183;
 pub const WAIT_OBJECT_0: DWORD = 0;
@@ -79,6 +81,24 @@ pub const PROCESS_INFORMATION = extern struct {
     hThread: HANDLE,
     dwProcessId: DWORD,
     dwThreadId: DWORD,
+};
+
+pub const FILETIME = extern struct {
+    dwLowDateTime: DWORD,
+    dwHighDateTime: DWORD,
+};
+
+pub const WIN32_FIND_DATAW = extern struct {
+    dwFileAttributes: DWORD,
+    ftCreationTime: FILETIME,
+    ftLastAccessTime: FILETIME,
+    ftLastWriteTime: FILETIME,
+    nFileSizeHigh: DWORD,
+    nFileSizeLow: DWORD,
+    dwReserved0: DWORD,
+    dwReserved1: DWORD,
+    cFileName: [260]u16,
+    cAlternateFileName: [14]u16,
 };
 
 pub extern "kernel32" fn GetModuleHandleW(lp_module_name: ?[*:0]const u16) callconv(.winapi) ?HMODULE;
@@ -147,6 +167,9 @@ pub extern "kernel32" fn CreateThread(
     lp_thread_id: ?*DWORD,
 ) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn GetFileAttributesW(lp_file_name: [*:0]const u16) callconv(.winapi) DWORD;
+pub extern "kernel32" fn FindFirstFileW(lp_file_name: [*:0]const u16, lp_find_file_data: *WIN32_FIND_DATAW) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn FindNextFileW(h_find_file: HANDLE, lp_find_file_data: *WIN32_FIND_DATAW) callconv(.winapi) BOOL;
+pub extern "kernel32" fn FindClose(h_find_file: HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CreateFileW(
     lp_file_name: [*:0]const u16,
     dw_desired_access: DWORD,

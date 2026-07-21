@@ -103,6 +103,8 @@ fn addGeneratorArgs(
         run.addArg(value);
     }
 
+    if (overrides.autoload == true) run.addArg("--autoload");
+
     if (overrides.copy_to) |value| {
         run.addArg("--copy-to");
         run.addArg(value);
@@ -158,6 +160,8 @@ fn parseForwardedArgs(allocator: std.mem.Allocator, args: ?[]const []const u8) C
             appendLoad(allocator, &parsed, readValue(values, &i, arg));
         } else if (std.mem.eql(u8, arg, "--import")) {
             parsed.overrides.load_import = readValue(values, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--autoload")) {
+            parsed.overrides.autoload = true;
         } else if (std.mem.eql(u8, arg, "--copy-to")) {
             parsed.overrides.copy_to = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--copy-to-input-dir")) {

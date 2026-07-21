@@ -32,6 +32,14 @@ zig build -- --input "Library.dll" --load "Patch.dll"
 
 DLS reads exports from `Library.dll`, generates a proxy named `Library.dll`, forwards the original exports to the backing DLL, and loads `Patch.dll` when the proxy starts.
 
+To load every `*.dls.dll` file beside the proxy, enable DLS autoloading:
+
+```bash
+zig build -- --autoload
+```
+
+Autoloaded companions use `.dls.dll` as their identifying suffix, for example `Patch.dls.dll`.
+
 If the patch must be injected at process startup, before the game's main thread begins running, use bootstrap mode:
 
 ```bash
@@ -83,6 +91,7 @@ Main fields:
 - `output`: generated proxy DLL name
 - `method`: `runtime_stub` by default, or `pe_forwarder`
 - `load`: DLLs loaded by the proxy
+- `autoload`: load every `*.dls.dll` file beside the proxy
 - `load_import`: import used by `pe_forwarder` to load DLLs
 - `copy_to`: optional output copy directory
 - `output_pair`: also output/copy the backing DLL beside the proxy
@@ -124,6 +133,7 @@ Useful command arguments:
 - `--forward [PATH]`
 - `--output [NAME]`
 - `--load [PATH]`; can be repeated
+- `--autoload`
 - `--import [NAME_OR_ORDINAL]`
 - `--copy-to [DIR]`
 - `--copy-to-input-dir`

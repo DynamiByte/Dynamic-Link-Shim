@@ -60,6 +60,8 @@ fn loadThread(_: ?*anyopaque) callconv(.winapi) win32.DWORD {
         _ = loadDll("load entry", cfg.load_text[idx], load);
     }
 
+    if (cfg.autoload) autoloadFiles();
+
     return 0;
 }
 
@@ -276,6 +278,62 @@ fn loadDll(label: []const u8, path_text: [:0]const u8, path: [*:0]const u16) boo
     return false;
 }
 
+fn autoloadFiles() void {
+    var dir_buf: [32768]u16 = undefined;
+    const dir_len = proxyDirectory(&dir_buf) orelse {
+        showAutoloadError(0);
+        return;
+    };
+
+    var pattern_buf: [32768]u16 = undefined;
+    @memcpy(pattern_buf[0..dir_len], dir_buf[0..dir_len]);
+    _ = appendAsciiUtf16Z(pattern_buf[0..], dir_len, "*.dls.dll") orelse {
+        showAutoloadError(0);
+        return;
+    };
+
+    var find_data: win32.WIN32_FIND_DATAW = undefined;
+    const find = win32.FindFirstFileW(@ptrCast(pattern_buf[0..].ptr), &find_data);
+    if (find == win32.INVALID_HANDLE_VALUE) {
+        const code = win32.GetLastError();
+        if (code != win32.ERROR_FILE_NOT_FOUND and code != win32.ERROR_PATH_NOT_FOUND) showAutoloadError(code);
+        return;
+    }
+    defer _ = win32.FindClose(find);
+
+    while (true) {
+        if ((find_data.dwFileAttributes & win32.FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            autoloadFile(dir_buf[0..dir_len], &find_data);
+        }
+
+        if (win32.FindNextFileW(find, &find_data) == win32.FALSE) {
+            const code = win32.GetLastError();
+            if (code != win32.ERROR_NO_MORE_FILES) showAutoloadError(code);
+            return;
+        }
+    }
+}
+
+fn autoloadFile(dir: []const u16, find_data: *const win32.WIN32_FIND_DATAW) void {
+    var path_buf: [32768]u16 = undefined;
+    if (dir.len >= path_buf.len) {
+        showAutoloadError(0);
+        return;
+    }
+
+    @memcpy(path_buf[0..dir.len], dir);
+    const name_len = utf16ArrayLen(find_data.cFileName[0..]);
+    if (name_len == 0 or dir.len + name_len + 1 > path_buf.len) {
+        showAutoloadError(0);
+        return;
+    }
+
+    @memcpy(path_buf[dir.len..][0..name_len], find_data.cFileName[0..name_len]);
+    path_buf[dir.len + name_len] = 0;
+
+    if (win32.LoadLibraryW(@ptrCast(path_buf[0..].ptr)) == null) showAutoloadError(win32.GetLastError());
+}
+
 fn runtimePath(path: [*:0]const u16, buffer: *[32768]u16) ?[*:0]const u16 {
     if (!cfg.bootstrap) return path;
     return resolveRuntimePath(path, buffer);
@@ -318,10 +376,40 @@ fn resolveRuntimePath(path: [*:0]const u16, buffer: *[32768]u16) ?[*:0]const u16
     return @ptrCast(buffer[0..].ptr);
 }
 
+fn proxyDirectory(buffer: *[32768]u16) ?usize {
+    const module_raw = @atomicLoad(usize, &g_proxy_module, .acquire);
+    if (module_raw == 0) return null;
+
+    const module: win32.HMODULE = @ptrFromInt(module_raw);
+    const module_len = win32.GetModuleFileNameW(module, buffer[0..].ptr, @intCast(buffer.len));
+    if (module_len == 0 or module_len >= buffer.len) return null;
+
+    var idx: usize = @intCast(module_len);
+    while (idx != 0) {
+        idx -= 1;
+        if (buffer[idx] == '\\' or buffer[idx] == '/') return idx + 1;
+    }
+
+    return 0;
+}
+
 fn utf16Len(path: [*:0]const u16) usize {
     var len: usize = 0;
     while (path[len] != 0) : (len += 1) {}
     return len;
+}
+
+fn utf16ArrayLen(path: []const u16) usize {
+    var len: usize = 0;
+    while (len < path.len and path[len] != 0) : (len += 1) {}
+    return len;
+}
+
+fn appendAsciiUtf16Z(buffer: []u16, offset: usize, text: []const u8) ?usize {
+    if (offset + text.len + 1 > buffer.len) return null;
+    for (text, 0..) |ch, idx| buffer[offset + idx] = ch;
+    buffer[offset + text.len] = 0;
+    return offset + text.len;
 }
 
 fn bootstrapExitIfMissing() void {
@@ -379,7 +467,7 @@ fn shouldPreloadForwardModuleAtAttach(bootstrapped: bool) bool {
 }
 
 fn shouldStartLoadThread() bool {
-    return cfg.bootstrap or cfg.load.len != 0;
+    return cfg.bootstrap or cfg.load.len != 0 or cfg.autoload;
 }
 
 fn bootstrapAlreadyAttempted() bool {
@@ -566,6 +654,17 @@ fn showLoadError(label: []const u8, path: [:0]const u8, code: win32.DWORD) void 
         "DLS could not load {s} DLL:\r\n{s}\r\n\r\nWin32 error: {d}",
         .{ label, path, code },
     ) catch "DLS could not load a configured DLL";
+
+    _ = win32.MessageBoxA(null, message.ptr, "DLS load failed", win32.MB_OK | win32.MB_ICONERROR);
+}
+
+fn showAutoloadError(code: win32.DWORD) void {
+    var message_buf: [512]u8 = undefined;
+    const message = std.fmt.bufPrintZ(
+        &message_buf,
+        "DLS could not load a .dls.dll beside the proxy.\r\n\r\nWin32 error: {d}",
+        .{code},
+    ) catch "DLS could not load a .dls.dll";
 
     _ = win32.MessageBoxA(null, message.ptr, "DLS load failed", win32.MB_OK | win32.MB_ICONERROR);
 }

@@ -78,6 +78,8 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8) !Args {
             args.overrides.load_import = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--method")) {
             args.overrides.method = parseMethod(takeValue(argv, &i, arg));
+        } else if (std.mem.eql(u8, arg, "--autoload")) {
+            args.overrides.autoload = true;
         } else if (std.mem.eql(u8, arg, "--copy-to")) {
             args.overrides.copy_to = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--output-pair")) {
@@ -190,6 +192,7 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     try out.writer.print("output_pair: {}\n", .{cfg.output_pair});
     try out.writer.print("embed_dlls: {}\n", .{cfg.embed_dlls});
     try out.writer.print("bootstrap: {}\n", .{cfg.bootstrap});
+    try out.writer.print("autoload: {}\n", .{cfg.autoload});
     try out.writer.print("exports: {d}\n\n", .{table.exports.len});
 
     for (table.exports) |export_item| {
@@ -517,6 +520,7 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward: []const u8, cfg: config.C
     try writeEmbeddedRuntimeConfig(&out.writer, cfg, forward);
 
     try out.writer.print("pub const bootstrap: bool = {};\n", .{cfg.bootstrap});
+    try out.writer.print("pub const autoload: bool = {};\n", .{cfg.autoload});
     try out.writer.print("pub const export_count: usize = {d};\n\n", .{supportedExportCount(cfg, table)});
 
     try out.writer.print("pub const export_names = [_]?[:0]const u8{{\n", .{});

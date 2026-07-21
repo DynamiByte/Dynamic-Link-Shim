@@ -17,6 +17,7 @@ pub const Config = struct {
     forward: ?[]const u8 = null,
     output: ?[]const u8 = null,
     load: []const []const u8 = &.{},
+    autoload: bool = false,
     load_import: ?[]const u8 = "#1",
     copy_to: ?[]const u8 = null,
     output_pair: bool = false,
@@ -31,6 +32,7 @@ pub const Overrides = struct {
     forward: ?[]const u8 = null,
     output: ?[]const u8 = null,
     load: ?[]const []const u8 = null,
+    autoload: ?bool = null,
     load_import: ?[]const u8 = null,
     copy_to: ?[]const u8 = null,
     output_pair: ?bool = null,
@@ -72,6 +74,7 @@ fn applyOverrides(gpa: std.mem.Allocator, cfg: *Config, overrides: Overrides) !v
     if (overrides.input) |value| cfg.input = value;
     if (overrides.forward) |value| cfg.forward = value;
     if (overrides.output) |value| cfg.output = value;
+    if (overrides.autoload) |value| cfg.autoload = value;
     if (overrides.load_import) |value| cfg.load_import = value;
     if (overrides.copy_to) |value| cfg.copy_to = value;
     if (overrides.output_pair) |value| cfg.output_pair = value;
@@ -100,6 +103,7 @@ fn validate(cfg: Config) !void {
     }
 
     if (cfg.bootstrap and cfg.method != .runtime_stub) return error.BootstrapNeedsRuntimeStub;
+    if (cfg.autoload and cfg.method != .runtime_stub) return error.AutoloadNeedsRuntimeStub;
     if (cfg.bootstrap and cfg.load.len == 0) return error.BootstrapNeedsLoadEntry;
 
     for (cfg.load) |load| {
