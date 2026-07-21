@@ -182,40 +182,41 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     defer table.deinit(gpa);
     requireSupportedArchitecture(cfg, table);
 
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(io, &stdout_buffer);
+    const out = &stdout.interface;
 
-    try out.writer.print("DLS export map\n", .{});
-    try out.writer.print("method: {s}\n", .{@tagName(cfg.method)});
-    try out.writer.print("input: {s}\n", .{cfg.input});
-    try out.writer.print("forward: {s}\n", .{forward});
-    try out.writer.print("exports_from: {s}\n", .{export_source});
-    try out.writer.print("output: {s}\n", .{config.outputName(cfg)});
-    try out.writer.print("output_pair: {}\n", .{cfg.output_pair});
-    try out.writer.print("embed_dlls: {}\n", .{cfg.embed_dlls});
-    try out.writer.print("bootstrap: {}\n", .{cfg.bootstrap});
-    try out.writer.print("autoload: {}\n", .{cfg.autoload});
-    try out.writer.print("exports: {d}\n\n", .{table.exports.len});
+    try out.print("DLS export map\n", .{});
+    try out.print("method: {s}\n", .{@tagName(cfg.method)});
+    try out.print("input: {s}\n", .{cfg.input});
+    try out.print("forward: {s}\n", .{forward});
+    try out.print("exports_from: {s}\n", .{export_source});
+    try out.print("output: {s}\n", .{config.outputName(cfg)});
+    try out.print("output_pair: {}\n", .{cfg.output_pair});
+    try out.print("embed_dlls: {}\n", .{cfg.embed_dlls});
+    try out.print("bootstrap: {}\n", .{cfg.bootstrap});
+    try out.print("autoload: {}\n", .{cfg.autoload});
+    try out.print("exports: {d}\n\n", .{table.exports.len});
 
     for (table.exports) |export_item| {
-        try out.writer.print("@{d} ", .{export_item.ordinal});
+        try out.print("@{d} ", .{export_item.ordinal});
         if (export_item.name) |name| {
-            try out.writer.print("{s}", .{name});
+            try out.print("{s}", .{name});
         } else {
-            try out.writer.print("<ordinal-only>", .{});
+            try out.print("<ordinal-only>", .{});
         }
 
         if (unsupportedReason(cfg, export_item)) |reason| {
-            try out.writer.print(" unsupported: {s}\n", .{reason});
+            try out.print(" unsupported: {s}\n", .{reason});
             continue;
         }
 
         const target = try displayTarget(gpa, cfg, forward, export_item);
         defer gpa.free(target);
-        try out.writer.print(" -> {s}\n", .{target});
+        try out.print(" -> {s}\n", .{target});
     }
 
-    try std.Io.File.stdout().writeStreamingAll(io, out.writer.buffered());
+    try out.flush();
 }
 
 fn loadConfig(gpa: std.mem.Allocator, io: std.Io, args: Args) !config.Config {
@@ -243,21 +244,9 @@ fn resolveExportSource(
 }
 
 fn loadExports(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !pe.ExportTable {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(
-        io,
-        path,
-        gpa,
-        .limited(512 * 1024 * 1024),
-    ) catch |err| {
-        std.process.fatal("unable to read export source DLL {s}: {t}", .{ path, err });
-    };
-    errdefer gpa.free(bytes);
-
-    var table = pe.parseExports(gpa, bytes) catch |err| {
+    return pe.parseExportsFile(gpa, io, path) catch |err| {
         std.process.fatal("unable to parse exports from {s}: {t}", .{ path, err });
     };
-    table.bytes = bytes;
-    return table;
 }
 
 fn requireSupportedArchitecture(cfg: config.Config, table: pe.ExportTable) void {
@@ -472,8 +461,7 @@ fn buildDef(gpa: std.mem.Allocator, cfg: config.Config, table: pe.ExportTable) !
     try writeDefString(&out.writer, config.outputName(cfg));
     try out.writer.print("\nEXPORTS\n", .{});
 
-    var used_ordinals: std.ArrayList(u32) = .empty;
-    defer used_ordinals.deinit(gpa);
+    var previous_ordinal: ?u32 = null;
 
     var unsupported_count: usize = 0;
     var stub_index: usize = 0;
@@ -497,9 +485,9 @@ fn buildDef(gpa: std.mem.Allocator, cfg: config.Config, table: pe.ExportTable) !
         }
         try out.writer.print("=dls_export_{d}", .{stub_index});
 
-        if (cfg.forwarding.include_ordinals and !hasOrdinal(used_ordinals.items, export_item.ordinal)) {
+        if (cfg.forwarding.include_ordinals and previous_ordinal != export_item.ordinal) {
             try out.writer.print(" @{d}", .{export_item.ordinal});
-            try used_ordinals.append(gpa, export_item.ordinal);
+            previous_ordinal = export_item.ordinal;
         } else if (cfg.forwarding.include_ordinals and export_item.name != null) {
             std.debug.print("warning: leaving duplicate ordinal off export {s}\n", .{export_item.name.?});
         }
@@ -762,13 +750,6 @@ fn forwarderTarget(gpa: std.mem.Allocator, forward: []const u8, export_item: pe.
     return std.fmt.allocPrint(gpa, "{s}.#{d}", .{ forward, export_item.ordinal });
 }
 
-fn hasOrdinal(values: []const u32, ordinal: u32) bool {
-    for (values) |value| {
-        if (value == ordinal) return true;
-    }
-    return false;
-}
-
 fn printUnsupported(export_item: pe.Export, reason: []const u8) void {
     if (export_item.name) |name| {
         std.debug.print("unsupported export @{d} {s}: {s}\n", .{ export_item.ordinal, name, reason });
@@ -904,9 +885,7 @@ fn copyBuiltDll(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     const dest_path = try std.fs.path.join(gpa, &.{ copy_dir, output_name });
     defer gpa.free(dest_path);
 
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, source, gpa, .limited(512 * 1024 * 1024));
-    defer gpa.free(bytes);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dest_path, .data = bytes });
+    try std.Io.Dir.cwd().copyFile(source, std.Io.Dir.cwd(), dest_path, io, .{});
 }
 
 fn prepareInputDir(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
