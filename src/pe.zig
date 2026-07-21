@@ -5,7 +5,21 @@ const IMAGE_DOS_SIGNATURE: u16 = 0x5A4D;
 const IMAGE_NT_SIGNATURE: u32 = 0x00004550;
 const IMAGE_NT_OPTIONAL_HDR32_MAGIC: u16 = 0x10B;
 const IMAGE_NT_OPTIONAL_HDR64_MAGIC: u16 = 0x20B;
+const IMAGE_FILE_MACHINE_I386: u16 = 0x014C;
+const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 const IMAGE_SCN_MEM_EXECUTE: u32 = 0x20000000;
+
+pub const Architecture = enum {
+    x86,
+    x86_64,
+
+    pub fn machine(self: Architecture) u16 {
+        return switch (self) {
+            .x86 => IMAGE_FILE_MACHINE_I386,
+            .x86_64 => IMAGE_FILE_MACHINE_AMD64,
+        };
+    }
+};
 
 pub const ExportKind = enum {
     code,
@@ -23,7 +37,7 @@ pub const Export = struct {
 
 pub const ExportTable = struct {
     bytes: []const u8 = &.{},
-    machine: u16,
+    architecture: Architecture,
     ordinal_base: u32,
     function_count: u32,
     dll_name: ?[]const u8,
@@ -67,10 +81,14 @@ pub fn parseExports(gpa: std.mem.Allocator, bytes: []const u8) !ExportTable {
     const optional = coff + 20;
     const magic = try readU16(bytes, optional);
 
-    const data_dir_offset: usize = switch (magic) {
-        IMAGE_NT_OPTIONAL_HDR32_MAGIC => 96,
-        IMAGE_NT_OPTIONAL_HDR64_MAGIC => 112,
-        else => return error.UnsupportedOptionalHeader,
+    const architecture: Architecture = switch (machine) {
+        IMAGE_FILE_MACHINE_I386 => if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) .x86 else return error.MismatchedPeArchitecture,
+        IMAGE_FILE_MACHINE_AMD64 => if (magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) .x86_64 else return error.MismatchedPeArchitecture,
+        else => return error.UnsupportedMachine,
+    };
+    const data_dir_offset: usize = switch (architecture) {
+        .x86 => 96,
+        .x86_64 => 112,
     };
 
     const export_dir_rva = try readU32(bytes, optional + data_dir_offset);
@@ -139,7 +157,7 @@ pub fn parseExports(gpa: std.mem.Allocator, bytes: []const u8) !ExportTable {
     };
 
     return .{
-        .machine = machine,
+        .architecture = architecture,
         .ordinal_base = dir.ordinal_base,
         .function_count = dir.function_count,
         .dll_name = dll_name,

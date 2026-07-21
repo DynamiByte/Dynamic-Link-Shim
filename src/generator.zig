@@ -147,6 +147,7 @@ fn generate(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     defer gpa.free(export_source);
     const table = try loadExports(gpa, io, export_source);
     defer table.deinit(gpa);
+    requireSupportedArchitecture(cfg, table);
 
     if (args.emit_dll) |dll_path| {
         const bytes = try buildForwarderDll(gpa, cfg, forward, table);
@@ -179,6 +180,7 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     defer gpa.free(export_source);
     const table = try loadExports(gpa, io, export_source);
     defer table.deinit(gpa);
+    requireSupportedArchitecture(cfg, table);
 
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
@@ -258,6 +260,15 @@ fn loadExports(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !pe.ExportT
     return table;
 }
 
+fn requireSupportedArchitecture(cfg: config.Config, table: pe.ExportTable) void {
+    if (table.architecture == .x86_64) return;
+
+    std.process.fatal(
+        "{s} currently supports x86_64 export sources only; input is {s}",
+        .{ @tagName(cfg.method), @tagName(table.architecture) },
+    );
+}
+
 fn buildForwarderDll(gpa: std.mem.Allocator, cfg: config.Config, forward: []const u8, table: pe.ExportTable) ![]u8 {
     const idata = try buildImportData(gpa, cfg);
     defer gpa.free(idata);
@@ -279,7 +290,7 @@ fn buildForwarderDll(gpa: std.mem.Allocator, cfg: config.Config, forward: []cons
     writeU32(header[0..], 0x40, IMAGE_NT_SIGNATURE);
 
     const coff = 0x44;
-    writeU16(header[0..], coff + 0, table.machine);
+    writeU16(header[0..], coff + 0, table.architecture.machine());
     writeU16(header[0..], coff + 2, 1);
     writeU16(header[0..], coff + 16, 0xF0);
     writeU16(header[0..], coff + 18, IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_LARGE_ADDRESS_AWARE | IMAGE_FILE_DLL);
