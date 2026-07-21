@@ -277,16 +277,23 @@ fn loadDll(label: []const u8, path_text: [:0]const u8, path: [*:0]const u16) boo
 }
 
 fn autoloadFiles() void {
+    const allocator = std.heap.page_allocator;
+    var names: std.ArrayList([]u16) = .empty;
+    defer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+
     var dir_buf: [32768]u16 = undefined;
     const dir_len = paths.directory(proxyModule(), &dir_buf) orelse {
-        showAutoloadError(0);
+        showAutoloadScanError(0);
         return;
     };
 
     var pattern_buf: [32768]u16 = undefined;
     @memcpy(pattern_buf[0..dir_len], dir_buf[0..dir_len]);
     _ = appendAsciiUtf16Z(pattern_buf[0..], dir_len, "*.dls.dll") orelse {
-        showAutoloadError(0);
+        showAutoloadScanError(0);
         return;
     };
 
@@ -294,42 +301,81 @@ fn autoloadFiles() void {
     const find = win32.FindFirstFileW(@ptrCast(pattern_buf[0..].ptr), &find_data);
     if (find == win32.INVALID_HANDLE_VALUE) {
         const code = win32.GetLastError();
-        if (code != win32.ERROR_FILE_NOT_FOUND and code != win32.ERROR_PATH_NOT_FOUND) showAutoloadError(code);
+        if (code != win32.ERROR_FILE_NOT_FOUND and code != win32.ERROR_PATH_NOT_FOUND) showAutoloadScanError(code);
         return;
     }
-    defer _ = win32.FindClose(find);
 
     while (true) {
         if ((find_data.dwFileAttributes & win32.FILE_ATTRIBUTE_DIRECTORY) == 0) {
-            autoloadFile(dir_buf[0..dir_len], &find_data);
+            const name_len = utf16ArrayLen(find_data.cFileName[0..]);
+            if (name_len == 0) {
+                _ = win32.FindClose(find);
+                showAutoloadScanError(0);
+                return;
+            }
+            const name = allocator.dupe(u16, find_data.cFileName[0..name_len]) catch {
+                _ = win32.FindClose(find);
+                showAutoloadScanError(0);
+                return;
+            };
+            names.append(allocator, name) catch {
+                allocator.free(name);
+                _ = win32.FindClose(find);
+                showAutoloadScanError(0);
+                return;
+            };
         }
 
         if (win32.FindNextFileW(find, &find_data) == win32.FALSE) {
             const code = win32.GetLastError();
-            if (code != win32.ERROR_NO_MORE_FILES) showAutoloadError(code);
-            return;
+            _ = win32.FindClose(find);
+            if (code != win32.ERROR_NO_MORE_FILES) {
+                showAutoloadScanError(code);
+                return;
+            }
+            break;
         }
+    }
+
+    std.sort.pdq([]u16, names.items, {}, autoloadNameLessThan);
+    for (names.items) |name| {
+        if (!autoloadFile(dir_buf[0..dir_len], name)) return;
     }
 }
 
-fn autoloadFile(dir: []const u16, find_data: *const win32.WIN32_FIND_DATAW) void {
+fn autoloadNameLessThan(_: void, left: []u16, right: []u16) bool {
+    const comparison = win32.CompareStringOrdinal(
+        left.ptr,
+        @intCast(left.len),
+        right.ptr,
+        @intCast(right.len),
+        win32.TRUE,
+    );
+    if (comparison == 1) return true;
+    if (comparison == 3) return false;
+    return std.mem.lessThan(u16, left, right);
+}
+
+fn autoloadFile(dir: []const u16, name: []const u16) bool {
     var path_buf: [32768]u16 = undefined;
     if (dir.len >= path_buf.len) {
-        showAutoloadError(0);
-        return;
+        showAutoloadScanError(0);
+        return false;
     }
 
     @memcpy(path_buf[0..dir.len], dir);
-    const name_len = utf16ArrayLen(find_data.cFileName[0..]);
-    if (name_len == 0 or dir.len + name_len + 1 > path_buf.len) {
-        showAutoloadError(0);
-        return;
+    if (name.len == 0 or dir.len + name.len + 1 > path_buf.len) {
+        showAutoloadScanError(0);
+        return false;
     }
 
-    @memcpy(path_buf[dir.len..][0..name_len], find_data.cFileName[0..name_len]);
-    path_buf[dir.len + name_len] = 0;
+    @memcpy(path_buf[dir.len..][0..name.len], name);
+    const path_len = dir.len + name.len;
+    path_buf[path_len] = 0;
 
-    if (win32.LoadLibraryW(@ptrCast(path_buf[0..].ptr)) == null) showAutoloadError(win32.GetLastError());
+    if (win32.LoadLibraryW(@ptrCast(path_buf[0..].ptr)) != null) return true;
+    showAutoloadLoadError(path_buf[0..path_len], win32.GetLastError());
+    return false;
 }
 
 fn runtimePath(path: [*:0]const u16, buffer: *[32768]u16) ?[*:0]const u16 {
@@ -355,6 +401,13 @@ fn appendAsciiUtf16Z(buffer: []u16, offset: usize, text: []const u8) ?usize {
     return offset + text.len;
 }
 
+fn appendUtf16Z(buffer: []u16, offset: usize, text: []const u16) ?usize {
+    if (offset + text.len + 1 > buffer.len) return null;
+    @memcpy(buffer[offset..][0..text.len], text);
+    buffer[offset + text.len] = 0;
+    return offset + text.len;
+}
+
 fn shouldPreloadForwardModuleAtAttach(bootstrapped: bool) bool {
     return !cfg.bootstrap or bootstrapped;
 }
@@ -374,15 +427,28 @@ fn showLoadError(label: []const u8, path: [:0]const u8, code: win32.DWORD) void 
     _ = win32.MessageBoxA(null, message.ptr, "DLS load failed", win32.MB_OK | win32.MB_ICONERROR);
 }
 
-fn showAutoloadError(code: win32.DWORD) void {
+fn showAutoloadScanError(code: win32.DWORD) void {
     var message_buf: [512]u8 = undefined;
     const message = std.fmt.bufPrintZ(
         &message_buf,
-        "DLS could not load a .dls.dll beside the proxy.\r\n\r\nWin32 error: {d}",
+        "DLS could not enumerate .dls.dll companions beside the proxy.\r\n\r\nWin32 error: {d}",
         .{code},
-    ) catch "DLS could not load a .dls.dll";
+    ) catch "DLS could not enumerate .dls.dll companions";
 
     _ = win32.MessageBoxA(null, message.ptr, "DLS load failed", win32.MB_OK | win32.MB_ICONERROR);
+}
+
+fn showAutoloadLoadError(path: []const u16, code: win32.DWORD) void {
+    var code_buf: [32]u8 = undefined;
+    const code_text = std.fmt.bufPrint(&code_buf, "{d}", .{code}) catch "unknown";
+    var message_buf: [32768]u16 = undefined;
+    var len = appendAsciiUtf16Z(&message_buf, 0, "DLS could not load autoload companion:\r\n") orelse return showAutoloadScanError(code);
+    len = appendUtf16Z(&message_buf, len, path) orelse return showAutoloadScanError(code);
+    len = appendAsciiUtf16Z(&message_buf, len, "\r\n\r\nWin32 error: ") orelse return showAutoloadScanError(code);
+    _ = appendAsciiUtf16Z(&message_buf, len, code_text) orelse return showAutoloadScanError(code);
+
+    const title = [_:0]u16{ 'D', 'L', 'S', ' ', 'l', 'o', 'a', 'd', ' ', 'f', 'a', 'i', 'l', 'e', 'd' };
+    _ = win32.MessageBoxW(null, @ptrCast(message_buf[0..].ptr), &title, win32.MB_OK | win32.MB_ICONERROR);
 }
 
 fn missingExport() callconv(.winapi) noreturn {

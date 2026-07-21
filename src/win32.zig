@@ -212,3 +212,9 @@ pub extern "user32" fn MessageBoxA(
     caption: [*:0]const u8,
     typ: u32,
 ) callconv(.winapi) c_int;
+pub extern "user32" fn MessageBoxW(
+    hwnd: ?HWND,
+    text: [*:0]const u16,
+    caption: [*:0]const u16,
+    typ: u32,
+) callconv(.winapi) c_int;

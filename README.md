@@ -38,7 +38,7 @@ To load every `*.dls.dll` file beside the proxy, enable DLS autoloading:
 zig build -- --autoload
 ```
 
-Autoloaded companions use `.dls.dll` as their identifying suffix, for example `Patch.dls.dll`.
+Autoloaded companions use `.dls.dll` as their identifying suffix, for example `Patch.dls.dll`. DLS loads them in case-insensitive filename order.
 
 If the patch must be injected at process startup, before the game's main thread begins running, use bootstrap mode:
 
