@@ -6,8 +6,13 @@ const win32 = @import("win32.zig");
 const STARTED: u32 = 1;
 const RETRY_SLEEP_MS: win32.DWORD = 10;
 const RETRY_COUNT: u32 = 1000;
+const MARKER_UNKNOWN: u32 = 0;
+const MARKER_CHECKING: u32 = 1;
+const MARKER_ABSENT: u32 = 2;
+const MARKER_PRESENT: u32 = 3;
 
 var g_started: u32 = 0;
+var g_marker_state: u32 = MARKER_UNKNOWN;
 
 pub fn exitIfMissing(proxy_module: ?win32.HMODULE, prepare_embedded: *const fn () bool) void {
     if (!cfg.bootstrap or configuredDllsAlreadyLoaded(proxy_module)) return;
@@ -29,9 +34,22 @@ pub fn exitIfMissing(proxy_module: ?win32.HMODULE, prepare_embedded: *const fn (
 }
 
 pub fn alreadyAttempted() bool {
-    var name_buf: [128]u16 = undefined;
-    const name = asciiToUtf16Z("DLS_BOOTSTRAPPED", name_buf[0..]) orelse return false;
-    return win32.GetEnvironmentVariableW(name, null, 0) != 0;
+    while (true) {
+        switch (@atomicLoad(u32, &g_marker_state, .acquire)) {
+            MARKER_PRESENT => return true,
+            MARKER_ABSENT => return false,
+            MARKER_UNKNOWN => {
+                if (@cmpxchgStrong(u32, &g_marker_state, MARKER_UNKNOWN, MARKER_CHECKING, .acq_rel, .acquire) == null) {
+                    const present = win32.GetEnvironmentVariableW(cfg.bootstrap_marker, null, 0) != 0;
+                    if (present) _ = win32.SetEnvironmentVariableW(cfg.bootstrap_marker, null);
+                    @atomicStore(u32, &g_marker_state, if (present) MARKER_PRESENT else MARKER_ABSENT, .release);
+                    return present;
+                }
+            },
+            MARKER_CHECKING => win32.Sleep(0),
+            else => return false,
+        }
+    }
 }
 
 pub fn waitForConfiguredDllsAlreadyLoaded(proxy_module: ?win32.HMODULE) bool {
@@ -87,8 +105,8 @@ fn start(proxy_module: ?win32.HMODULE) bool {
     var cmd_buf: [32768]u16 = undefined;
     _ = copyUtf16Z(win32.GetCommandLineW(), cmd_buf[0..]) orelse return false;
 
-    const one = [_:0]u16{'1'};
-    if (!setEnvUtf16("DLS_BOOTSTRAPPED", &one)) return false;
+    var environment_buf: [32768]u16 = undefined;
+    const environment = buildChildEnvironment(&environment_buf) orelse return false;
 
     var startup: win32.STARTUPINFOW = std.mem.zeroes(win32.STARTUPINFOW);
     startup.cb = @sizeOf(win32.STARTUPINFOW);
@@ -100,8 +118,8 @@ fn start(proxy_module: ?win32.HMODULE) bool {
         null,
         null,
         win32.FALSE,
-        win32.CREATE_SUSPENDED,
-        null,
+        win32.CREATE_SUSPENDED | win32.CREATE_UNICODE_ENVIRONMENT,
+        @ptrCast(environment),
         @ptrCast(cwd_buf[0..].ptr),
         &startup,
         &process_info,
@@ -205,18 +223,69 @@ fn copyUtf16Z(source: [*:0]const u16, buffer: []u16) ?usize {
     return len;
 }
 
-fn setEnvUtf16(name: []const u8, value: [*:0]const u16) bool {
-    var name_buf: [128]u16 = undefined;
-    const name_w = asciiToUtf16Z(name, name_buf[0..]) orelse return false;
-    return win32.SetEnvironmentVariableW(name_w, value) != win32.FALSE;
+fn buildChildEnvironment(buffer: *[32768]u16) ?[*]u16 {
+    const source = win32.GetEnvironmentStringsW() orelse return null;
+    defer _ = win32.FreeEnvironmentStringsW(source);
+
+    var marker_buf: [128]u16 = undefined;
+    const marker_name_len = paths.utf16Len(cfg.bootstrap_marker);
+    if (marker_name_len + 3 > marker_buf.len) return null;
+    @memcpy(marker_buf[0..marker_name_len], cfg.bootstrap_marker[0..marker_name_len]);
+    marker_buf[marker_name_len] = '=';
+    marker_buf[marker_name_len + 1] = '1';
+    marker_buf[marker_name_len + 2] = 0;
+    const marker_entry = marker_buf[0 .. marker_name_len + 2];
+
+    var source_offset: usize = 0;
+    var output_offset: usize = 0;
+    var inserted = false;
+
+    while (source[source_offset] != 0) {
+        const entry_start = source_offset;
+        while (source[source_offset] != 0) : (source_offset += 1) {}
+        const entry = source[entry_start..source_offset];
+        source_offset += 1;
+
+        if (isMarkerEntry(entry, marker_name_len)) continue;
+        if (!inserted and compareEnvironmentEntries(marker_entry, entry) < 0) {
+            output_offset = appendEnvironmentEntry(buffer, output_offset, marker_entry) orelse return null;
+            inserted = true;
+        }
+        output_offset = appendEnvironmentEntry(buffer, output_offset, entry) orelse return null;
+    }
+
+    if (!inserted) output_offset = appendEnvironmentEntry(buffer, output_offset, marker_entry) orelse return null;
+    if (output_offset >= buffer.len) return null;
+    buffer[output_offset] = 0;
+    return buffer[0..].ptr;
 }
 
-fn asciiToUtf16Z(text: []const u8, buffer: []u16) ?[*:0]u16 {
-    if (text.len + 1 > buffer.len) return null;
+fn isMarkerEntry(entry: []const u16, marker_name_len: usize) bool {
+    if (entry.len <= marker_name_len or entry[marker_name_len] != '=') return false;
+    return win32.CompareStringOrdinal(
+        entry.ptr,
+        @intCast(marker_name_len),
+        cfg.bootstrap_marker,
+        @intCast(marker_name_len),
+        win32.TRUE,
+    ) == 2;
+}
 
-    for (text, 0..) |ch, idx| buffer[idx] = ch;
-    buffer[text.len] = 0;
-    return @ptrCast(buffer[0..].ptr);
+fn compareEnvironmentEntries(left: []const u16, right: []const u16) i32 {
+    return win32.CompareStringOrdinal(
+        left.ptr,
+        @intCast(left.len),
+        right.ptr,
+        @intCast(right.len),
+        win32.TRUE,
+    ) - 2;
+}
+
+fn appendEnvironmentEntry(buffer: *[32768]u16, offset: usize, entry: []const u16) ?usize {
+    if (offset + entry.len + 1 >= buffer.len) return null;
+    @memcpy(buffer[offset..][0..entry.len], entry);
+    buffer[offset + entry.len] = 0;
+    return offset + entry.len + 1;
 }
 
 fn showError(text: [:0]const u8) void {

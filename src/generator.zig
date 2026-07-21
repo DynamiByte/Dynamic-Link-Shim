@@ -531,6 +531,7 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward: []const u8, cfg: config.C
     try writeEmbeddedRuntimeConfig(&out.writer, cfg, forward);
 
     try out.writer.print("pub const bootstrap: bool = {};\n", .{cfg.bootstrap});
+    try writeBootstrapMarker(gpa, &out.writer, cfg, forward);
     try out.writer.print("pub const autoload: bool = {};\n", .{cfg.autoload});
     try out.writer.print("pub const export_count: usize = {d};\n\n", .{supportedExportCount(cfg, table)});
 
@@ -578,6 +579,28 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward: []const u8, cfg: config.C
     try out.writer.print("}};\n", .{});
 
     return out.toOwnedSlice();
+}
+
+fn writeBootstrapMarker(gpa: std.mem.Allocator, w: *std.Io.Writer, cfg: config.Config, forward: []const u8) !void {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(config.outputName(cfg));
+    hasher.update(&.{0});
+    hasher.update(forward);
+    for (cfg.load) |load| {
+        hasher.update(&.{0});
+        hasher.update(load);
+    }
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    hasher.final(&digest);
+    const identity = std.mem.readInt(u64, digest[0..8], .little);
+    const marker = try std.fmt.allocPrint(gpa, "DLS_BOOTSTRAP_{x}", .{identity});
+    defer gpa.free(marker);
+
+    try w.print("const bootstrap_marker_w = [_:0]u16{{", .{});
+    try writeUtf16Values(w, marker, "bootstrap marker");
+    try w.print("}};\n", .{});
+    try w.print("pub const bootstrap_marker: [*:0]const u16 = &bootstrap_marker_w;\n", .{});
 }
 
 fn writeEmbeddedRuntimeConfig(w: *std.Io.Writer, cfg: config.Config, forward: []const u8) !void {

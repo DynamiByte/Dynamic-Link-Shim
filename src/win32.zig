@@ -27,6 +27,7 @@ pub const OPEN_EXISTING: DWORD = 3;
 pub const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x00000010;
 pub const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
 pub const CREATE_SUSPENDED: DWORD = 0x00000004;
+pub const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
 pub const MEM_COMMIT: DWORD = 0x00001000;
 pub const MEM_RESERVE: DWORD = 0x00002000;
 pub const MEM_RELEASE: DWORD = 0x00008000;
@@ -107,6 +108,15 @@ pub extern "kernel32" fn GetCommandLineW() callconv(.winapi) [*:0]const u16;
 pub extern "kernel32" fn GetCurrentDirectoryW(n_buffer_length: DWORD, lp_buffer: [*]u16) callconv(.winapi) DWORD;
 pub extern "kernel32" fn SetEnvironmentVariableW(lp_name: [*:0]const u16, lp_value: ?[*:0]const u16) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetEnvironmentVariableW(lp_name: [*:0]const u16, lp_buffer: ?[*]u16, n_size: DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) ?[*]u16;
+pub extern "kernel32" fn FreeEnvironmentStringsW(penv: [*]u16) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CompareStringOrdinal(
+    lp_string1: [*]const u16,
+    cch_count1: i32,
+    lp_string2: [*]const u16,
+    cch_count2: i32,
+    b_ignore_case: BOOL,
+) callconv(.winapi) i32;
 pub extern "kernel32" fn CreateProcessW(
     lp_application_name: ?[*:0]const u16,
     lp_command_line: ?[*:0]u16,
