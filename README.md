@@ -40,7 +40,7 @@ zig build -- --input "Library.dll" --load "Patch.dll" --bootstrap
 
 In bootstrap mode, the proxy checks whether the configured load DLLs are already present. If they are missing, it starts a fresh suspended copy of the same process, injects the load DLLs with remote `LoadLibraryW`, resumes the new process, and exits the original process. Runtime DLL paths are resolved beside the proxy DLL.
 
-For an install-style folder, DLS can rename the original DLL to the resolved `forward_to` path and copy the proxy beside it:
+For an install-style folder, DLS can rename the original DLL to the resolved `forward` path and copy the proxy beside it:
 
 ```bash
 zig build -- --input "/Game/Library.dll" --load "Patch.dll" --copy-to-input-dir
@@ -79,9 +79,9 @@ DLS reads `config.zon` beside `build.zig` by default. The file in this repo is t
 Main fields:
 
 - `input`: DLL to read exports from
-- `forward_to`: original DLL the proxy forwards to
+- `forward`: original DLL the proxy forwards to
 - `output`: generated proxy DLL name
-- `backend`: `runtime_stub` by default, or `pe_forwarder`
+- `method`: `runtime_stub` by default, or `pe_forwarder`
 - `load`: DLLs loaded by the proxy
 - `load_import`: import used by `pe_forwarder` to load DLLs
 - `copy_to`: optional output copy directory
@@ -96,11 +96,11 @@ Use another config file:
 zig build -- --config "some-file.zon"
 ```
 
-Override the backend:
+Override the method:
 
 ```bash
-zig build -Dbackend=runtime_stub
-zig build -Dbackend=pe_forwarder
+zig build -Dmethod=runtime_stub
+zig build -Dmethod=pe_forwarder
 ```
 
 Enable pair output, embedded output, startup bootstrap, or input-folder copying with command arguments:
@@ -115,35 +115,35 @@ zig build -- --copy-to-input-dir
 Command arguments go after `--` and override config values:
 
 ```bash
-zig build -- --input "Library.dll" --forward-to "Library.og.dll" --load "PatchA.dll" --load "PatchB.dll"
+zig build -- --input "Library.dll" --forward "Library.og.dll" --load "PatchA.dll" --load "PatchB.dll"
 ```
 
 Useful command arguments:
 
 - `--input [PATH]`
-- `--forward-to [PATH]`
+- `--forward [PATH]`
 - `--output [NAME]`
 - `--load [PATH]`; can be repeated
 - `--import [NAME_OR_ORDINAL]`
 - `--copy-to [DIR]`
 - `--copy-to-input-dir`
-- `--output-pair` / `--no-output-pair`
-- `--embed-dlls` / `--no-embed-dlls`
-- `--bootstrap` / `--no-bootstrap`
+- `--output-pair`
+- `--embed-dlls`
+- `--bootstrap`
 
 ---
 
-## Backends
+## Methods
 
 ### `runtime_stub`
 
-`runtime_stub` is the default backend.
+`runtime_stub` is the default method.
 
 It builds a normal DLL with real exported stubs. At runtime, the proxy loads configured DLLs with `LoadLibraryW`, loads the backing DLL with `LoadLibraryW`, resolves exports with `GetProcAddress`, then jumps to the resolved export.
 
-When `embed_dlls` is enabled, this backend also embeds the backing DLL and configured loaded DLLs as raw bytes, extracts them into the current folder if they are missing or their SHA-256 hashes differ, then continues through the same loading path.
+When `embed_dlls` is enabled, this method also embeds the backing DLL and configured loaded DLLs as raw bytes, extracts them into the current folder if they are missing or their SHA-256 hashes differ, then continues through the same loading path.
 
-When `bootstrap` is enabled, this backend restarts the current executable suspended and injects the configured load DLLs if they are not already loaded. This is useful when the loaded DLL needs the same startup shape as a launcher/injector.
+When `bootstrap` is enabled, this method restarts the current executable suspended and injects the configured load DLLs if they are not already loaded. This is useful when the loaded DLL needs the same startup shape as a launcher/injector.
 
 This is the safer default when the host expects real exported functions from the proxy DLL.
 
@@ -151,7 +151,7 @@ This is the safer default when the host expects real exported functions from the
 
 `pe_forwarder` emits a tiny PE forwarder DLL directly.
 
-This mirrors the reference forwarder style: companion DLLs are loaded through the PE import table, while exports are represented as PE export forwarders to `forward_to`.
+This mirrors the reference forwarder style: companion DLLs are loaded through the PE import table, while exports are represented as PE export forwarders to `forward`.
 
 For `pe_forwarder`, each loaded DLL must export the configured `load_import` name or ordinal. `#1` is the default. Embedded DLL extraction is only supported by `runtime_stub`.
 

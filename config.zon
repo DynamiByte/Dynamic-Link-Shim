@@ -4,13 +4,13 @@
 
     // Real DLL to forward exports to. Null derives from input.
     // (Library.dll > Library.og.dll)
-    .forward_to = null,
+    .forward = null,
 
     // Generated proxy DLL name. Null uses input basename.
     .output = null,
 
     // .runtime_stub or .pe_forwarder
-    .backend = .runtime_stub,
+    .method = .runtime_stub,
 
     // Extra DLLs to load.
     .load = .{

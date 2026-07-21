@@ -81,8 +81,8 @@ fn addGeneratorArgs(
         run.addArg(value);
     }
 
-    if (overrides.forward_to) |value| {
-        run.addArg("--forward-to");
+    if (overrides.forward) |value| {
+        run.addArg("--forward");
         run.addArg(value);
     }
 
@@ -108,20 +108,14 @@ fn addGeneratorArgs(
         run.addArg(value);
     }
 
-    if (overrides.output_pair) |value| {
-        run.addArg(if (value) "--output-pair" else "--no-output-pair");
-    }
+    if (overrides.output_pair == true) run.addArg("--output-pair");
 
-    if (overrides.embed_dlls) |value| {
-        run.addArg(if (value) "--embed-dlls" else "--no-embed-dlls");
-    }
+    if (overrides.embed_dlls == true) run.addArg("--embed-dlls");
 
-    if (overrides.bootstrap) |value| {
-        run.addArg(if (value) "--bootstrap" else "--no-bootstrap");
-    }
+    if (overrides.bootstrap == true) run.addArg("--bootstrap");
 
-    if (overrides.backend) |value| {
-        run.addArg("--backend");
+    if (overrides.method) |value| {
+        run.addArg("--method");
         run.addArg(@tagName(value));
     }
 }
@@ -156,30 +150,24 @@ fn parseForwardedArgs(allocator: std.mem.Allocator, args: ?[]const []const u8) C
             parsed.config_path = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--input")) {
             parsed.overrides.input = readValue(values, &i, arg);
-        } else if (std.mem.eql(u8, arg, "--forward-to") or std.mem.eql(u8, arg, "--forward_to")) {
-            parsed.overrides.forward_to = readValue(values, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--forward")) {
+            parsed.overrides.forward = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--output")) {
             parsed.overrides.output = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--load")) {
             appendLoad(allocator, &parsed, readValue(values, &i, arg));
-        } else if (std.mem.eql(u8, arg, "--import") or std.mem.eql(u8, arg, "--load-import") or std.mem.eql(u8, arg, "--load_import")) {
+        } else if (std.mem.eql(u8, arg, "--import")) {
             parsed.overrides.load_import = readValue(values, &i, arg);
-        } else if (std.mem.eql(u8, arg, "--copy-to") or std.mem.eql(u8, arg, "--copy_to")) {
+        } else if (std.mem.eql(u8, arg, "--copy-to")) {
             parsed.overrides.copy_to = readValue(values, &i, arg);
         } else if (std.mem.eql(u8, arg, "--copy-to-input-dir")) {
             parsed.copy_to_input_dir = true;
         } else if (std.mem.eql(u8, arg, "--output-pair")) {
             parsed.overrides.output_pair = true;
-        } else if (std.mem.eql(u8, arg, "--no-output-pair")) {
-            parsed.overrides.output_pair = false;
-        } else if (std.mem.eql(u8, arg, "--embed") or std.mem.eql(u8, arg, "--embed-dlls") or std.mem.eql(u8, arg, "--embed_dlls")) {
+        } else if (std.mem.eql(u8, arg, "--embed-dlls")) {
             parsed.overrides.embed_dlls = true;
-        } else if (std.mem.eql(u8, arg, "--no-embed") or std.mem.eql(u8, arg, "--no-embed-dlls") or std.mem.eql(u8, arg, "--no-embed_dlls")) {
-            parsed.overrides.embed_dlls = false;
         } else if (std.mem.eql(u8, arg, "--bootstrap")) {
             parsed.overrides.bootstrap = true;
-        } else if (std.mem.eql(u8, arg, "--no-bootstrap")) {
-            parsed.overrides.bootstrap = false;
         } else {
             std.process.fatal("unknown DLS argument: {s}", .{arg});
         }
@@ -252,8 +240,8 @@ pub fn build(b: *std.Build) void {
     }
 
     var overrides = cli_options.overrides;
-    if (b.option(config.Backend, "backend", "Proxy generation backend")) |value| {
-        overrides.backend = value;
+    if (b.option(config.Method, "method", "Proxy generation method")) |value| {
+        overrides.method = value;
     }
     var app_config = loadBuildConfig(b, config_path, overrides);
     if (cli_options.copy_to_input_dir and app_config.output_pair) {
@@ -262,11 +250,11 @@ pub fn build(b: *std.Build) void {
     if (cli_options.copy_to_input_dir and app_config.embed_dlls) {
         std.process.fatal("use --embed-dlls or --copy-to-input-dir, not both", .{});
     }
-    if (app_config.embed_dlls and app_config.backend == .pe_forwarder) {
-        std.process.fatal("embedded DLL extraction needs the runtime_stub backend", .{});
+    if (app_config.embed_dlls and app_config.method == .pe_forwarder) {
+        std.process.fatal("embedded DLL extraction needs the runtime_stub method", .{});
     }
-    if (app_config.bootstrap and app_config.backend == .pe_forwarder) {
-        std.process.fatal("bootstrap needs the runtime_stub backend", .{});
+    if (app_config.bootstrap and app_config.method == .pe_forwarder) {
+        std.process.fatal("bootstrap needs the runtime_stub method", .{});
     }
     if (cli_options.copy_to_input_dir) {
         app_config.copy_to = config.inputDirectory(app_config);
@@ -274,19 +262,19 @@ pub fn build(b: *std.Build) void {
     }
 
     const output_name = config.outputName(app_config);
-    const forward_to_name = config.forwardToName(b.allocator, app_config) catch |err| {
-        std.process.fatal("unable to resolve forward_to: {t}", .{err});
+    const forward_name = config.forwardName(b.allocator, app_config) catch |err| {
+        std.process.fatal("unable to resolve forward: {t}", .{err});
     };
     const export_source_name = if (cli_options.copy_to_input_dir)
-        forward_to_name
-    else if (pathExists(b.graph.io, forward_to_name))
-        forward_to_name
+        forward_name
+    else if (pathExists(b.graph.io, forward_name))
+        forward_name
     else if (pathExists(b.graph.io, app_config.input))
         app_config.input
     else
-        std.process.fatal("unable to find export source DLL: {s} or {s}", .{ app_config.input, forward_to_name });
-    const backing_output_name = std.fs.path.basenameWindows(forward_to_name);
-    const runtime_forward_to_name = if (app_config.output_pair or app_config.embed_dlls or app_config.bootstrap) backing_output_name else forward_to_name;
+        std.process.fatal("unable to find export source DLL: {s} or {s}", .{ app_config.input, forward_name });
+    const backing_output_name = std.fs.path.basenameWindows(forward_name);
+    const runtime_forward_name = if (app_config.output_pair or app_config.embed_dlls or app_config.bootstrap) backing_output_name else forward_name;
 
     const generator = b.addExecutable(.{
         .name = "dls-generate",
@@ -300,18 +288,18 @@ pub fn build(b: *std.Build) void {
     const prepare_input_dir = if (cli_options.copy_to_input_dir) blk: {
         const prepare = b.addRunArtifact(generator);
         addGeneratorArgs(prepare, config_path, overrides);
-        prepare.addArg("--resolved-forward-to");
-        prepare.addArg(forward_to_name);
+        prepare.addArg("--resolved-forward");
+        prepare.addArg(forward_name);
         prepare.addArg("--prepare-input-dir");
         break :blk prepare;
     } else null;
 
-    if (app_config.backend == .pe_forwarder) {
+    if (app_config.method == .pe_forwarder) {
         const generate = b.addRunArtifact(generator);
         if (prepare_input_dir) |prepare| generate.step.dependOn(&prepare.step);
         addGeneratorArgs(generate, config_path, overrides);
-        generate.addArg("--resolved-forward-to");
-        generate.addArg(runtime_forward_to_name);
+        generate.addArg("--resolved-forward");
+        generate.addArg(runtime_forward_name);
         generate.addArg("--export-source");
         generate.addArg(export_source_name);
         generate.addArg("--emit-dll");
@@ -349,8 +337,8 @@ pub fn build(b: *std.Build) void {
         const generate = b.addRunArtifact(generator);
         if (prepare_input_dir) |prepare| generate.step.dependOn(&prepare.step);
         addGeneratorArgs(generate, config_path, overrides);
-        generate.addArg("--resolved-forward-to");
-        generate.addArg(runtime_forward_to_name);
+        generate.addArg("--resolved-forward");
+        generate.addArg(runtime_forward_name);
         generate.addArg("--export-source");
         generate.addArg(export_source_name);
         generate.addArg("--emit-def");
@@ -412,8 +400,8 @@ pub fn build(b: *std.Build) void {
     const inspect = b.step("inspect", "Parse the configured input DLL and print the export map");
     const inspect_run = b.addRunArtifact(generator);
     addGeneratorArgs(inspect_run, config_path, overrides);
-    inspect_run.addArg("--resolved-forward-to");
-    inspect_run.addArg(runtime_forward_to_name);
+    inspect_run.addArg("--resolved-forward");
+    inspect_run.addArg(runtime_forward_name);
     inspect_run.addArg("--export-source");
     inspect_run.addArg(export_source_name);
     inspect_run.addArg("--inspect");

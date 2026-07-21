@@ -1,4 +1,4 @@
-// DLS generator and backend dispatcher
+// DLS generator and method dispatcher
 const std = @import("std");
 const config = @import("config.zig");
 const pe = @import("pe.zig");
@@ -23,7 +23,7 @@ const Args = struct {
     copy_output_name: ?[]const u8 = null,
     copy_dir: ?[]const u8 = null,
     clean_dir: []const u8 = "generated",
-    resolved_forward_to: ?[]const u8 = null,
+    resolved_forward: ?[]const u8 = null,
     export_source: ?[]const u8 = null,
 };
 
@@ -68,32 +68,26 @@ fn parseArgs(gpa: std.mem.Allocator, argv: []const []const u8) !Args {
             args.config_path = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--input")) {
             args.overrides.input = takeValue(argv, &i, arg);
-        } else if (std.mem.eql(u8, arg, "--forward-to")) {
-            args.overrides.forward_to = takeValue(argv, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--forward")) {
+            args.overrides.forward = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--output")) {
             args.overrides.output = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--load")) {
             try appendLoad(gpa, &args, takeValue(argv, &i, arg));
-        } else if (std.mem.eql(u8, arg, "--import") or std.mem.eql(u8, arg, "--load-import")) {
+        } else if (std.mem.eql(u8, arg, "--import")) {
             args.overrides.load_import = takeValue(argv, &i, arg);
-        } else if (std.mem.eql(u8, arg, "--backend") or std.mem.eql(u8, arg, "--method")) {
-            args.overrides.backend = parseBackend(takeValue(argv, &i, arg));
+        } else if (std.mem.eql(u8, arg, "--method")) {
+            args.overrides.method = parseMethod(takeValue(argv, &i, arg));
         } else if (std.mem.eql(u8, arg, "--copy-to")) {
             args.overrides.copy_to = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--output-pair")) {
             args.overrides.output_pair = true;
-        } else if (std.mem.eql(u8, arg, "--no-output-pair")) {
-            args.overrides.output_pair = false;
-        } else if (std.mem.eql(u8, arg, "--embed") or std.mem.eql(u8, arg, "--embed-dlls") or std.mem.eql(u8, arg, "--embed_dlls")) {
+        } else if (std.mem.eql(u8, arg, "--embed-dlls")) {
             args.overrides.embed_dlls = true;
-        } else if (std.mem.eql(u8, arg, "--no-embed") or std.mem.eql(u8, arg, "--no-embed-dlls") or std.mem.eql(u8, arg, "--no-embed_dlls")) {
-            args.overrides.embed_dlls = false;
         } else if (std.mem.eql(u8, arg, "--bootstrap")) {
             args.overrides.bootstrap = true;
-        } else if (std.mem.eql(u8, arg, "--no-bootstrap")) {
-            args.overrides.bootstrap = false;
-        } else if (std.mem.eql(u8, arg, "--resolved-forward-to")) {
-            args.resolved_forward_to = takeValue(argv, &i, arg);
+        } else if (std.mem.eql(u8, arg, "--resolved-forward")) {
+            args.resolved_forward = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--export-source")) {
             args.export_source = takeValue(argv, &i, arg);
         } else if (std.mem.eql(u8, arg, "--emit-dll")) {
@@ -138,22 +132,22 @@ fn takeValue(argv: []const []const u8, index: *usize, name: []const u8) []const 
     return argv[index.*];
 }
 
-fn parseBackend(value: []const u8) config.Backend {
-    return std.meta.stringToEnum(config.Backend, value) orelse
-        std.process.fatal("unknown backend: {s}", .{value});
+fn parseMethod(value: []const u8) config.Method {
+    return std.meta.stringToEnum(config.Method, value) orelse
+        std.process.fatal("unknown method: {s}", .{value});
 }
 
 fn generate(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     const cfg = try loadConfig(gpa, io, args);
-    const forward_to = try resolveForwardTo(gpa, cfg, args);
-    defer gpa.free(forward_to);
-    const export_source = try resolveExportSource(gpa, io, cfg.input, forward_to, args.export_source);
+    const forward = try resolveForward(gpa, cfg, args);
+    defer gpa.free(forward);
+    const export_source = try resolveExportSource(gpa, io, cfg.input, forward, args.export_source);
     defer gpa.free(export_source);
     const table = try loadExports(gpa, io, export_source);
     defer table.deinit(gpa);
 
     if (args.emit_dll) |dll_path| {
-        const bytes = try buildForwarderDll(gpa, cfg, forward_to, table);
+        const bytes = try buildForwarderDll(gpa, cfg, forward, table);
         defer gpa.free(bytes);
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dll_path, .data = bytes });
         return;
@@ -165,7 +159,7 @@ fn generate(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
 
     const def_text = try buildDef(gpa, cfg, table);
     defer gpa.free(def_text);
-    const runtime_text = try buildRuntimeConfig(gpa, forward_to, cfg, table);
+    const runtime_text = try buildRuntimeConfig(gpa, forward, cfg, table);
     defer gpa.free(runtime_text);
     const asm_text = try buildStubAsm(gpa, cfg, table);
     defer gpa.free(asm_text);
@@ -177,9 +171,9 @@ fn generate(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
 
 fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     const cfg = try loadConfig(gpa, io, args);
-    const forward_to = try resolveForwardTo(gpa, cfg, args);
-    defer gpa.free(forward_to);
-    const export_source = try resolveExportSource(gpa, io, cfg.input, forward_to, args.export_source);
+    const forward = try resolveForward(gpa, cfg, args);
+    defer gpa.free(forward);
+    const export_source = try resolveExportSource(gpa, io, cfg.input, forward, args.export_source);
     defer gpa.free(export_source);
     const table = try loadExports(gpa, io, export_source);
     defer table.deinit(gpa);
@@ -188,9 +182,9 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     defer out.deinit();
 
     try out.writer.print("DLS export map\n", .{});
-    try out.writer.print("backend: {s}\n", .{@tagName(cfg.backend)});
+    try out.writer.print("method: {s}\n", .{@tagName(cfg.method)});
     try out.writer.print("input: {s}\n", .{cfg.input});
-    try out.writer.print("forward_to: {s}\n", .{forward_to});
+    try out.writer.print("forward: {s}\n", .{forward});
     try out.writer.print("exports_from: {s}\n", .{export_source});
     try out.writer.print("output: {s}\n", .{config.outputName(cfg)});
     try out.writer.print("output_pair: {}\n", .{cfg.output_pair});
@@ -211,7 +205,7 @@ fn inspect(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
             continue;
         }
 
-        const target = try displayTarget(gpa, cfg, forward_to, export_item);
+        const target = try displayTarget(gpa, cfg, forward, export_item);
         defer gpa.free(target);
         try out.writer.print(" -> {s}\n", .{target});
     }
@@ -225,22 +219,22 @@ fn loadConfig(gpa: std.mem.Allocator, io: std.Io, args: Args) !config.Config {
     };
 }
 
-fn resolveForwardTo(gpa: std.mem.Allocator, cfg: config.Config, args: Args) ![]const u8 {
-    if (args.resolved_forward_to) |forward_to| return gpa.dupe(u8, forward_to);
-    return config.forwardToName(gpa, cfg);
+fn resolveForward(gpa: std.mem.Allocator, cfg: config.Config, args: Args) ![]const u8 {
+    if (args.resolved_forward) |forward| return gpa.dupe(u8, forward);
+    return config.forwardName(gpa, cfg);
 }
 
 fn resolveExportSource(
     gpa: std.mem.Allocator,
     io: std.Io,
     input: []const u8,
-    forward_to: []const u8,
+    forward: []const u8,
     override: ?[]const u8,
 ) ![]const u8 {
     if (override) |source| return gpa.dupe(u8, source);
-    if (exists(io, forward_to)) return gpa.dupe(u8, forward_to);
+    if (exists(io, forward)) return gpa.dupe(u8, forward);
     if (exists(io, input)) return gpa.dupe(u8, input);
-    std.process.fatal("unable to find export source DLL: {s} or {s}", .{ input, forward_to });
+    std.process.fatal("unable to find export source DLL: {s} or {s}", .{ input, forward });
 }
 
 fn loadExports(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !pe.ExportTable {
@@ -261,11 +255,11 @@ fn loadExports(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !pe.ExportT
     return table;
 }
 
-fn buildForwarderDll(gpa: std.mem.Allocator, cfg: config.Config, forward_to: []const u8, table: pe.ExportTable) ![]u8 {
+fn buildForwarderDll(gpa: std.mem.Allocator, cfg: config.Config, forward: []const u8, table: pe.ExportTable) ![]u8 {
     const idata = try buildImportData(gpa, cfg);
     defer gpa.free(idata);
     const edata_rva = IDATA_RVA + @as(u32, @intCast(idata.len));
-    const edata = try buildExportData(gpa, cfg, forward_to, table, edata_rva);
+    const edata = try buildExportData(gpa, cfg, forward, table, edata_rva);
     defer gpa.free(edata);
 
     var rdata: std.ArrayList(u8) = .empty;
@@ -332,7 +326,7 @@ fn buildImportData(gpa: std.mem.Allocator, cfg: config.Config) ![]u8 {
     errdefer buf.deinit(gpa);
 
     if (cfg.load.len == 0) return buf.toOwnedSlice(gpa);
-    const load_import = cfg.load_import orelse std.process.fatal("pe_forwarder backend needs load_import when load entries are present", .{});
+    const load_import = cfg.load_import orelse std.process.fatal("pe_forwarder method needs load_import when load entries are present", .{});
 
     _ = try appendZeros(gpa, &buf, (cfg.load.len + 1) * 20);
 
@@ -369,7 +363,7 @@ fn importThunkValue(gpa: std.mem.Allocator, buf: *std.ArrayList(u8), load_import
     return @as(u64, IDATA_RVA) + @as(u64, @intCast(hint_offset));
 }
 
-fn buildExportData(gpa: std.mem.Allocator, cfg: config.Config, forward_to: []const u8, table: pe.ExportTable, edata_rva: u32) ![]u8 {
+fn buildExportData(gpa: std.mem.Allocator, cfg: config.Config, forward: []const u8, table: pe.ExportTable, edata_rva: u32) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(gpa);
 
@@ -427,10 +421,10 @@ fn buildExportData(gpa: std.mem.Allocator, cfg: config.Config, forward_to: []con
         if (skip_index[idx]) continue;
         const ordinal = table.ordinal_base + @as(u32, @intCast(idx));
         const target = if (names_by_index[idx]) |name|
-            try std.fmt.allocPrint(gpa, "{s}.{s}", .{ forward_to, name })
+            try std.fmt.allocPrint(gpa, "{s}.{s}", .{ forward, name })
         else blk: {
             if (!cfg.forwarding.include_ordinals) continue;
-            break :blk try std.fmt.allocPrint(gpa, "{s}.#{d}", .{ forward_to, ordinal });
+            break :blk try std.fmt.allocPrint(gpa, "{s}.#{d}", .{ forward, ordinal });
         };
         defer gpa.free(target);
         const target_offset = try appendCString(gpa, &buf, target);
@@ -508,19 +502,19 @@ fn buildDef(gpa: std.mem.Allocator, cfg: config.Config, table: pe.ExportTable) !
     return out.toOwnedSlice();
 }
 
-fn buildRuntimeConfig(gpa: std.mem.Allocator, forward_to: []const u8, cfg: config.Config, table: pe.ExportTable) ![]u8 {
+fn buildRuntimeConfig(gpa: std.mem.Allocator, forward: []const u8, cfg: config.Config, table: pe.ExportTable) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
 
-    try out.writer.print("const forward_to_w = [_:0]u16{{", .{});
-    try writeUtf16Values(&out.writer, forward_to, "forward_to");
+    try out.writer.print("const forward_w = [_:0]u16{{", .{});
+    try writeUtf16Values(&out.writer, forward, "forward");
     try out.writer.print("}};\n", .{});
-    try out.writer.print("pub const forward_to: [*:0]const u16 = &forward_to_w;\n", .{});
-    try out.writer.print("pub const forward_to_text: [:0]const u8 = ", .{});
-    try writeZigString(&out.writer, forward_to);
+    try out.writer.print("pub const forward: [*:0]const u16 = &forward_w;\n", .{});
+    try out.writer.print("pub const forward_text: [:0]const u8 = ", .{});
+    try writeZigString(&out.writer, forward);
     try out.writer.print(";\n\n", .{});
 
-    try writeEmbeddedRuntimeConfig(&out.writer, cfg, forward_to);
+    try writeEmbeddedRuntimeConfig(&out.writer, cfg, forward);
 
     try out.writer.print("pub const bootstrap: bool = {};\n", .{cfg.bootstrap});
     try out.writer.print("pub const export_count: usize = {d};\n\n", .{supportedExportCount(cfg, table)});
@@ -571,10 +565,10 @@ fn buildRuntimeConfig(gpa: std.mem.Allocator, forward_to: []const u8, cfg: confi
     return out.toOwnedSlice();
 }
 
-fn writeEmbeddedRuntimeConfig(w: *std.Io.Writer, cfg: config.Config, forward_to: []const u8) !void {
+fn writeEmbeddedRuntimeConfig(w: *std.Io.Writer, cfg: config.Config, forward: []const u8) !void {
     if (cfg.embed_dlls) {
         try w.print("const embedded_0_w = [_:0]u16{{", .{});
-        try writeUtf16Values(w, forward_to, "embedded forward target");
+        try writeUtf16Values(w, forward, "embedded forward target");
         try w.print("}};\n", .{});
 
         for (cfg.load, 0..) |load, idx| {
@@ -599,7 +593,7 @@ fn writeEmbeddedRuntimeConfig(w: *std.Io.Writer, cfg: config.Config, forward_to:
     );
 
     if (cfg.embed_dlls) {
-        try writeEmbeddedDllEntry(w, 0, forward_to);
+        try writeEmbeddedDllEntry(w, 0, forward);
         for (cfg.load, 0..) |load, idx| {
             try writeEmbeddedDllEntry(w, idx + 1, runtimeLoadName(cfg, load));
         }
@@ -673,7 +667,7 @@ fn writeStub(w: *std.Io.Writer, index: usize) !void {
 }
 
 fn unsupportedReason(cfg: config.Config, export_item: pe.Export) ?[]const u8 {
-    return switch (cfg.backend) {
+    return switch (cfg.method) {
         .runtime_stub => runtimeStubUnsupportedReason(cfg, export_item),
         .pe_forwarder => peForwarderUnsupportedReason(cfg, export_item),
     };
@@ -707,27 +701,27 @@ fn supportedExportCount(cfg: config.Config, table: pe.ExportTable) usize {
     return count;
 }
 
-fn displayTarget(gpa: std.mem.Allocator, cfg: config.Config, forward_to: []const u8, export_item: pe.Export) ![]u8 {
-    return switch (cfg.backend) {
-        .runtime_stub => runtimeTarget(gpa, forward_to, export_item),
-        .pe_forwarder => forwarderTarget(gpa, forward_to, export_item),
+fn displayTarget(gpa: std.mem.Allocator, cfg: config.Config, forward: []const u8, export_item: pe.Export) ![]u8 {
+    return switch (cfg.method) {
+        .runtime_stub => runtimeTarget(gpa, forward, export_item),
+        .pe_forwarder => forwarderTarget(gpa, forward, export_item),
     };
 }
 
-fn runtimeTarget(gpa: std.mem.Allocator, forward_to: []const u8, export_item: pe.Export) ![]u8 {
+fn runtimeTarget(gpa: std.mem.Allocator, forward: []const u8, export_item: pe.Export) ![]u8 {
     if (export_item.name) |name| {
-        return std.fmt.allocPrint(gpa, "{s}!{s}", .{ forward_to, name });
+        return std.fmt.allocPrint(gpa, "{s}!{s}", .{ forward, name });
     }
 
-    return std.fmt.allocPrint(gpa, "{s}!#{d}", .{ forward_to, export_item.ordinal });
+    return std.fmt.allocPrint(gpa, "{s}!#{d}", .{ forward, export_item.ordinal });
 }
 
-fn forwarderTarget(gpa: std.mem.Allocator, forward_to: []const u8, export_item: pe.Export) ![]u8 {
+fn forwarderTarget(gpa: std.mem.Allocator, forward: []const u8, export_item: pe.Export) ![]u8 {
     if (export_item.name) |name| {
-        return std.fmt.allocPrint(gpa, "{s}.{s}", .{ forward_to, name });
+        return std.fmt.allocPrint(gpa, "{s}.{s}", .{ forward, name });
     }
 
-    return std.fmt.allocPrint(gpa, "{s}.#{d}", .{ forward_to, export_item.ordinal });
+    return std.fmt.allocPrint(gpa, "{s}.#{d}", .{ forward, export_item.ordinal });
 }
 
 fn hasOrdinal(values: []const u32, ordinal: u32) bool {
@@ -879,20 +873,20 @@ fn copyBuiltDll(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
 
 fn prepareInputDir(gpa: std.mem.Allocator, io: std.Io, args: Args) !void {
     const cfg = try loadConfig(gpa, io, args);
-    const forward_to = try resolveForwardTo(gpa, cfg, args);
-    defer gpa.free(forward_to);
+    const forward = try resolveForward(gpa, cfg, args);
+    defer gpa.free(forward);
 
-    if (std.ascii.eqlIgnoreCase(cfg.input, forward_to)) {
-        std.process.fatal("input and forward_to resolve to the same path: {s}", .{cfg.input});
+    if (std.ascii.eqlIgnoreCase(cfg.input, forward)) {
+        std.process.fatal("input and forward resolve to the same path: {s}", .{cfg.input});
     }
 
-    if (exists(io, forward_to)) return;
+    if (exists(io, forward)) return;
     if (!exists(io, cfg.input)) {
-        std.process.fatal("input DLL is missing and forward_to does not exist: {s}", .{cfg.input});
+        std.process.fatal("input DLL is missing and forward does not exist: {s}", .{cfg.input});
     }
 
-    std.Io.Dir.rename(.cwd(), cfg.input, .cwd(), forward_to, io) catch |err| {
-        std.process.fatal("unable to rename {s} to {s}: {t}", .{ cfg.input, forward_to, err });
+    std.Io.Dir.rename(.cwd(), cfg.input, .cwd(), forward, io) catch |err| {
+        std.process.fatal("unable to rename {s} to {s}: {t}", .{ cfg.input, forward, err });
     };
 }
 

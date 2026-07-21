@@ -1,7 +1,7 @@
 // DLS config surface
 const std = @import("std");
 
-pub const Backend = enum {
+pub const Method = enum {
     runtime_stub,
     pe_forwarder,
 };
@@ -14,7 +14,7 @@ pub const Forwarding = struct {
 
 pub const Config = struct {
     input: []const u8,
-    forward_to: ?[]const u8 = null,
+    forward: ?[]const u8 = null,
     output: ?[]const u8 = null,
     load: []const []const u8 = &.{},
     load_import: ?[]const u8 = "#1",
@@ -22,13 +22,13 @@ pub const Config = struct {
     output_pair: bool = false,
     embed_dlls: bool = false,
     bootstrap: bool = false,
-    backend: Backend = .runtime_stub,
+    method: Method = .runtime_stub,
     forwarding: Forwarding = .{},
 };
 
 pub const Overrides = struct {
     input: ?[]const u8 = null,
-    forward_to: ?[]const u8 = null,
+    forward: ?[]const u8 = null,
     output: ?[]const u8 = null,
     load: ?[]const []const u8 = null,
     load_import: ?[]const u8 = null,
@@ -36,7 +36,7 @@ pub const Overrides = struct {
     output_pair: ?bool = null,
     embed_dlls: ?bool = null,
     bootstrap: ?bool = null,
-    backend: ?Backend = null,
+    method: ?Method = null,
 };
 
 pub fn loadFile(
@@ -70,14 +70,14 @@ pub fn loadFile(
 
 fn applyOverrides(gpa: std.mem.Allocator, cfg: *Config, overrides: Overrides) !void {
     if (overrides.input) |value| cfg.input = value;
-    if (overrides.forward_to) |value| cfg.forward_to = value;
+    if (overrides.forward) |value| cfg.forward = value;
     if (overrides.output) |value| cfg.output = value;
     if (overrides.load_import) |value| cfg.load_import = value;
     if (overrides.copy_to) |value| cfg.copy_to = value;
     if (overrides.output_pair) |value| cfg.output_pair = value;
     if (overrides.embed_dlls) |value| cfg.embed_dlls = value;
     if (overrides.bootstrap) |value| cfg.bootstrap = value;
-    if (overrides.backend) |value| cfg.backend = value;
+    if (overrides.method) |value| cfg.method = value;
 
     _ = gpa;
     if (overrides.load) |value| cfg.load = value;
@@ -85,10 +85,10 @@ fn applyOverrides(gpa: std.mem.Allocator, cfg: *Config, overrides: Overrides) !v
 
 fn validate(cfg: Config) !void {
     if (cfg.input.len == 0) return error.EmptyInput;
-    if (cfg.forward_to) |forward_to| {
-        if (forward_to.len == 0) return error.EmptyForwardTo;
+    if (cfg.forward) |forward| {
+        if (forward.len == 0) return error.EmptyForward;
     } else if (!endsWithIgnoreCase(cfg.input, ".dll")) {
-        return error.InputMustBeDllForDefaultForwardTo;
+        return error.InputMustBeDllForDefaultForward;
     }
 
     const resolved_output = outputName(cfg);
@@ -99,7 +99,7 @@ fn validate(cfg: Config) !void {
         if (load_import.len == 0) return error.EmptyLoadImport;
     }
 
-    if (cfg.bootstrap and cfg.backend != .runtime_stub) return error.BootstrapNeedsRuntimeStub;
+    if (cfg.bootstrap and cfg.method != .runtime_stub) return error.BootstrapNeedsRuntimeStub;
     if (cfg.bootstrap and cfg.load.len == 0) return error.BootstrapNeedsLoadEntry;
 
     for (cfg.load) |load| {
@@ -115,9 +115,9 @@ pub fn inputDirectory(cfg: Config) []const u8 {
     return std.fs.path.dirnameWindows(cfg.input) orelse ".";
 }
 
-pub fn forwardToName(gpa: std.mem.Allocator, cfg: Config) ![]const u8 {
-    if (cfg.forward_to) |forward_to| return gpa.dupe(u8, forward_to);
-    if (!endsWithIgnoreCase(cfg.input, ".dll")) return error.InputMustBeDllForDefaultForwardTo;
+pub fn forwardName(gpa: std.mem.Allocator, cfg: Config) ![]const u8 {
+    if (cfg.forward) |forward| return gpa.dupe(u8, forward);
+    if (!endsWithIgnoreCase(cfg.input, ".dll")) return error.InputMustBeDllForDefaultForward;
     return std.fmt.allocPrint(gpa, "{s}.og.dll", .{cfg.input[0 .. cfg.input.len - 4]});
 }
 

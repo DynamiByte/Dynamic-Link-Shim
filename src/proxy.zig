@@ -86,14 +86,14 @@ fn forwardModule() ?win32.HMODULE {
     if (cached != 0) return @ptrFromInt(cached);
 
     var path_buf: [32768]u16 = undefined;
-    const forward_path = runtimePath(cfg.forward_to, &path_buf) orelse {
-        showLoadError("forward target", cfg.forward_to_text, 0);
+    const forward_path = runtimePath(cfg.forward, &path_buf) orelse {
+        showLoadError("forward target", cfg.forward_text, 0);
         return null;
     };
 
     const module = win32.LoadLibraryW(forward_path) orelse {
         @atomicStore(win32.DWORD, &g_last_error, win32.GetLastError(), .release);
-        showLoadError("forward target", cfg.forward_to_text, @atomicLoad(win32.DWORD, &g_last_error, .acquire));
+        showLoadError("forward target", cfg.forward_text, @atomicLoad(win32.DWORD, &g_last_error, .acquire));
         return null;
     };
 
@@ -572,6 +572,6 @@ fn showLoadError(label: []const u8, path: [:0]const u8, code: win32.DWORD) void 
 
 fn missingExport() callconv(.winapi) noreturn {
     const code = @atomicLoad(win32.DWORD, &g_last_error, .acquire);
-    showLoadError("forward target export", cfg.forward_to_text, code);
+    showLoadError("forward target export", cfg.forward_text, code);
     win32.ExitProcess(127);
 }
