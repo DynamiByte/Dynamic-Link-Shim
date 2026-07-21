@@ -106,8 +106,8 @@ pub fn parseExports(gpa: std.mem.Allocator, bytes: []const u8) !ExportTable {
     const function_count = @as(usize, dir.function_count);
     const name_count = @as(usize, dir.name_count);
     const functions_offset = rvaToOffset(sections, dir.functions_rva) orelse return error.BadExportAddressTable;
-    const names_offset = rvaToOffset(sections, dir.names_rva) orelse return error.BadExportNameTable;
-    const ordinals_offset = rvaToOffset(sections, dir.ordinals_rva) orelse return error.BadExportOrdinalTable;
+    const names_offset = if (name_count == 0) 0 else rvaToOffset(sections, dir.names_rva) orelse return error.BadExportNameTable;
+    const ordinals_offset = if (name_count == 0) 0 else rvaToOffset(sections, dir.ordinals_rva) orelse return error.BadExportOrdinalTable;
 
     var has_name = try gpa.alloc(bool, function_count);
     defer gpa.free(has_name);
